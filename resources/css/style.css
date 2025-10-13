@@ -1,0 +1,177 @@
+:root {
+    /* Colores primarios */
+    --primary: #FDC040;        /* Amarillo principal (botones, accents) */
+    --secondary: #FFB800;      /* Amarillo intenso (hover states) */
+    --accent: #FFF4D6;         /* Amarillo claro (accents suaves) */
+    --light: #FFFBF0;          /* Amarillo muy claro (backgrounds) */
+    --lighter: #FFFEF8;        /* Amarillo casi blanco */
+    
+    /* Colores complementarios */
+    --orange: #FF8A00;         /* Naranja (promociones, badges) */
+    --orange-light: #FFF3E0;   /* Naranja claro (backgrounds) */
+    --green: #00B207;          /* Verde (accents orgánicos) */
+    --green-light: #EDF2EE;    /* Verde claro */
+    
+    /* Colores de texto */
+    --text-dark: #1A1A1A;      /* Texto principal */
+    --text-medium: #4A4A4A;    /* Texto secundario */
+    --text-light: #808080;     /* Texto terciario */
+    --text-gray: #999999;      /* Texto deshabilitado */
+    
+    /* Colores de fondo */
+    --bg-white: #FFFFFF;
+    --bg-gray-50: #F9FAFB;
+    --bg-gray-100: #F2F2F2;
+    --bg-cream: #FFF8F0;       /* Fondo cálido */
+    
+    /* Colores de estado */
+    --success: #00B207;        /* Verde éxito */
+    --warning: #FF8A00;        /* Naranja advertencia */
+    --error: #EA4B48;          /* Rojo error */
+    --info: #2388FF;           /* Azul información */
+    
+    /* Colores de descuento/sale */
+    --sale: #FF6B6B;           /* Rojo badges de descuento */
+    --sale-bg: #FFE8E8;        /* Fondo badges de descuento */
+}
+
+/* Utilidades de fondo */
+.bg-primary { background-color: var(--primary); }
+.bg-secondary { background-color: var(--secondary); }
+.bg-accent { background-color: var(--accent); }
+.bg-light { background-color: var(--light); }
+.bg-lighter { background-color: var(--lighter); }
+.bg-orange { background-color: var(--orange); }
+.bg-green { background-color: var(--green); }
+.bg-cream { background-color: var(--bg-cream); }
+
+/* Utilidades de texto */
+.text-primary { color: var(--primary); }
+.text-secondary { color: var(--secondary); }
+.text-accent { color: var(--accent); }
+.text-orange { color: var(--orange); }
+.text-green { color: var(--green); }
+.text-dark { color: var(--text-dark); }
+.text-medium { color: var(--text-medium); }
+.text-light { color: var(--text-light); }
+.text-gray { color: var(--text-gray); }
+
+/* Utilidades de bordes */
+.border-primary { border-color: var(--primary); }
+.border-secondary { border-color: var(--secondary); }
+.border-accent { border-color: var(--accent); }
+.border-orange { border-color: var(--orange); }
+.border-green { border-color: var(--green); }
+.border-gray { border-color: #E6E6E6; }
+
+/* Utilidades hover */
+.hover\:bg-primary:hover { background-color: var(--primary); }
+.hover\:bg-secondary:hover { background-color: var(--secondary); }
+.hover\:bg-accent:hover { background-color: var(--accent); }
+.hover\:bg-orange:hover { background-color: var(--orange); }
+.hover\:bg-green:hover { background-color: var(--green); }
+.hover\:text-primary:hover { color: var(--primary); }
+.hover\:text-secondary:hover { color: var(--secondary); }
+.hover\:text-orange:hover { color: var(--orange); }
+.hover\:text-green:hover { color: var(--green); }
+
+/* Gradientes */
+.gradient-primary {
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+}
+
+.gradient-accent {
+    background: linear-gradient(135deg, var(--accent), var(--primary));
+}
+
+.gradient-warm {
+    background: linear-gradient(135deg, var(--primary), var(--orange));
+}
+
+.gradient-sunshine {
+    background: linear-gradient(135deg, #FFF4D6, var(--primary));
+}
+
+/* Sombras con color primario */
+.shadow-primary {
+    box-shadow: 0 4px 12px rgba(253, 192, 64, 0.25);
+}
+
+.shadow-primary-lg {
+    box-shadow: 0 10px 25px rgba(253, 192, 64, 0.3);
+}
+
+.shadow-orange {
+    box-shadow: 0 4px 12px rgba(255, 138, 0, 0.15);
+}
+
+.shadow-soft {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* Badges y etiquetas */
+.badge-sale {
+    background-color: var(--sale);
+    color: var(--bg-white);
+}
+
+.badge-discount {
+    background-color: var(--orange);
+    color: var(--bg-white);
+}
+
+.badge-new {
+    background-color: var(--primary);
+    color: var(--text-dark);
+}
+
+.badge-organic {
+    background-color: var(--green);
+    color: var(--bg-white);
+}
+
+/* Botones */
+.btn-primary {
+    background-color: var(--primary);
+    color: var(--text-dark);
+    border: none;
+}
+
+.btn-primary:hover {
+    background-color: var(--secondary);
+}
+
+.btn-outline-primary {
+    background-color: transparent;
+    color: var(--primary);
+    border: 2px solid var(--primary);
+}
+
+.btn-outline-primary:hover {
+    background-color: var(--primary);
+    color: var(--text-dark);
+}
+
+/*
+        :root {
+            --primary: #EB0924;
+            --secondary: #F77786;
+            --accent: #998486;
+            --light: #D1A1A7;
+            --lighter: #C7AFB2;
+        }
+
+        .bg-primary { background-color: var(--primary); }
+        .bg-secondary { background-color: var(--secondary); }
+        .bg-accent { background-color: var(--accent); }
+        .bg-light { background-color: var(--light); }
+        .bg-lighter { background-color: var(--lighter); }
+
+        .text-primary { color: var(--primary); }
+        .text-secondary { color: var(--secondary); }
+        .text-accent { color: var(--accent); }
+
+        .border-primary { border-color: var(--primary); }
+        .hover\:bg-primary:hover { background-color: var(--primary); }
+        .hover\:bg-secondary:hover { background-color: var(--secondary); }
+*/
