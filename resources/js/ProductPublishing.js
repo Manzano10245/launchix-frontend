@@ -1,16 +1,55 @@
 /**
  * ProductPublishing.js - Gestión completa de productos con integración API
- * Versión mejorada con manejo de errores robusto, logging detallado y funcionalidad avanzada
+ * Adaptado para usar API_BASE_URL + API_PREFIX y Bearer token (cuando aplique)
  */
+
+import './config.js';
 
 window.ProductManager = (function() {
     // Configuración privada
     const config = {
-        apiBaseUrl: '/api',
+        // Base completa: http(s)://host + /api/v1 (o lo que esté configurado)
+        apiBaseUrl: ((window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1')).replace(/\/$/, ''),
         maxImageSize: 2 * 1024 * 1024, // 2MB
-        allowedImageTypes: ['image/jpeg', 'image/png', 'image/jpg'],
+    allowedImageTypes: ['image/jpeg', 'image/png', 'image/jpg', 'image/webp', 'image/gif'],
         maxGalleryImages: 5
     };
+
+    // Host base de la API (sin barra final), para construir URLs absolutas de imágenes
+    const API_HOST = (window.API_BASE_URL || '').replace(/\/$/, '');
+
+    // Placeholder SVG embebido para errores de carga de imágenes
+    const PLACEHOLDER_IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">\n' +
+        '  <rect width="100%" height="100%" fill="#e5e7eb"/>\n' +
+        '  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="18" fill="#6b7280">Sin imagen</text>\n' +
+        '</svg>'
+    );
+
+    // Endpoints relativos configurables (el base ya incluye API_PREFIX)
+    const EP_PRODUCTS = (window.API_REL_EP_PRODUCTS || '/entrepreneur/products');
+    const EP_PRODUCTS_FALLBACK = (window.API_REL_EP_PRODUCTS_FALLBACK || '/products');
+
+    async function _apiRequestWithFallback(primary, fallback, options = {}, preferFallback = false) {
+        // Si ya hemos detectado que el primario no existe, o se fuerza preferir fallback
+        if (preferFallback === true || window.__USE_PRODUCTS_FALLBACK === true) {
+            return _apiRequest(fallback, options);
+        }
+        try {
+            return await _apiRequest(primary, options);
+        } catch (e1) {
+            // Si fue un 404, marcar bandera para usar fallback en adelante
+            if (e1 && (e1.status === 404 || /could not be found/i.test(e1.message || ''))) {
+                window.__USE_PRODUCTS_FALLBACK = true;
+            }
+            console.warn('⚠️ [API] Endpoint primario falló, probando fallback:', primary, '->', fallback, e1?.message);
+            try {
+                return await _apiRequest(fallback, options);
+            } catch (e2) {
+                throw e2; // Propagar el error final
+            }
+        }
+    }
 
     // Estado privado
     let currentProducts = [];
@@ -20,6 +59,65 @@ window.ProductManager = (function() {
     // ============================================
     // MÉTODOS PRIVADOS
     // ============================================
+
+    /**
+     * Construye encabezados auth comunes (Bearer si existe)
+     */
+    function _getAuthHeaders(base = {}) {
+        const headers = { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest', ...(base || {}) };
+        try {
+            const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+        } catch {}
+        return headers;
+    }
+
+    /**
+     * Obtiene el ID del emprendedor autenticado desde cache o API y lo cachea.
+     * @returns {Promise<string|number|null>} ID del emprendedor o null si no disponible
+     */
+    async function _getEntrepreneurId() {
+        try {
+            // 1) Revisar memoria y localStorage
+            if (window.ENTREPRENEUR_ID) return window.ENTREPRENEUR_ID;
+            const cached = localStorage.getItem('ENTREPRENEUR_ID');
+            if (cached) {
+                window.ENTREPRENEUR_ID = cached;
+                return cached;
+            }
+
+            // 2) Intentar obtenerlo desde el endpoint de perfil del emprendedor
+            const mePath = window.API_EP_ME || `${(window.API_PREFIX || '/api/v1')}/entrepreneur/me`;
+            const url = window.API_FULL(mePath);
+            const res = await fetch(url, {
+                method: 'GET',
+                headers: _getAuthHeaders(),
+                credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin'
+            });
+
+            if (!res.ok) {
+                // 401/404 etc.: no se puede determinar, retornar null
+                return null;
+            }
+
+            const data = await res.json().catch(() => ({}));
+
+            // Posibles formas: {data:{id}}, {user:{id}}, {id}, {entrepreneur:{id}}
+            const payload = data?.data || data?.user || data?.entrepreneur || data;
+            const id = payload?.id || payload?.entrepreneur_id || null;
+
+            if (id) {
+                window.ENTREPRENEUR_ID = id;
+                try { localStorage.setItem('ENTREPRENEUR_ID', String(id)); } catch {}
+                return id;
+            }
+
+            return null;
+        } catch (e) {
+            console.warn('⚠️ [AUTH] No se pudo obtener entrepreneur_id:', e?.message || e);
+            return null;
+        }
+    }
 
     /**
      * Obtiene el token CSRF
@@ -72,7 +170,7 @@ window.ProductManager = (function() {
     function _validateImageFile(file) {
         if (!file) return false;
         if (!config.allowedImageTypes.includes(file.type)) {
-            _showError(`Tipo de archivo no válido: ${file.type}. Solo se permiten JPG/PNG.`);
+            _showError(`Tipo de archivo no válido: ${file.type}. Solo se permiten JPG/PNG/WebP/GIF.`);
             return false;
         }
         if (file.size > config.maxImageSize) {
@@ -112,6 +210,46 @@ window.ProductManager = (function() {
         } catch (e) {
             return dateString;
         }
+    }
+
+    /**
+     * Intenta resolver el ID del dueño/emprendedor de un producto en distintas formas
+     * @param {Object} p - Producto
+     * @returns {string|number|null}
+     */
+    function _getOwnerIdFromProduct(p) {
+        if (!p || typeof p !== 'object') return null;
+        // snake_case directos
+        if (p.entrepreneur_id != null) return p.entrepreneur_id;
+        if (p.emprendedor_id != null) return p.emprendedor_id;
+        if (p.owner_id != null) return p.owner_id;
+        if (p.user_id != null) return p.user_id;
+        if (p.usuario_id != null) return p.usuario_id;
+        if (p.created_by_id != null) return p.created_by_id;
+        if (p.creator_id != null) return p.creator_id;
+        if (p.author_id != null) return p.author_id;
+
+        // camelCase
+        if (p.entrepreneurId != null) return p.entrepreneurId;
+        if (p.emprendedorId != null) return p.emprendedorId;
+        if (p.ownerId != null) return p.ownerId;
+        if (p.userId != null) return p.userId;
+        if (p.usuarioId != null) return p.usuarioId;
+        if (p.createdById != null) return p.createdById;
+        if (p.creatorId != null) return p.creatorId;
+        if (p.authorId != null) return p.authorId;
+
+        // Relaciones anidadas
+        if (p.entrepreneur && p.entrepreneur.id != null) return p.entrepreneur.id;
+        if (p.emprendedor && p.emprendedor.id != null) return p.emprendedor.id;
+        if (p.owner && p.owner.id != null) return p.owner.id;
+        if (p.user && p.user.id != null) return p.user.id;
+        if (p.usuario && p.usuario.id != null) return p.usuario.id;
+        if (p.created_by && p.created_by.id != null) return p.created_by.id;
+        if (p.creator && p.creator.id != null) return p.creator.id;
+        if (p.author && p.author.id != null) return p.author.id;
+
+        return null;
     }
 
     /**
@@ -211,6 +349,85 @@ window.ProductManager = (function() {
     }
 
     /**
+     * Resuelve una ruta de imagen devolviendo una URL absoluta hacia el host de la API
+     * @param {string} path - Ruta devuelta por la API (puede ser relativa o absoluta)
+     * @returns {string} URL absoluta a la imagen
+     */
+    function _resolveImageUrl(path) {
+        if (!path || typeof path !== 'string') return '';
+        if (path.startsWith('http')) return path;
+        // Normalizar: eliminar barras iniciales
+        let normalized = path.replace(/^\/+/, '');
+        // Si ya es storage/... => usar tal cual
+        if (normalized.startsWith('storage/')) {
+            return `${API_HOST}/${normalized}`;
+        }
+        // En otros casos, anteponer storage/
+        normalized = normalized.replace(/^storage\//, '');
+        return `${API_HOST}/storage/${normalized}`;
+    }
+
+    /**
+     * Duplica campos del FormData a nombres alternativos (es/en) para compatibilidad con distintos backends
+     * @param {FormData} fd
+     */
+    function _augmentCompatibilityFormData(fd) {
+        if (!fd) return fd;
+        try {
+            // entrepreneur_id -> emprendedor_id (alias ES)
+            if (fd.has('entrepreneur_id') && !fd.has('emprendedor_id')) {
+                fd.append('emprendedor_id', fd.get('entrepreneur_id'));
+            }
+
+            // category -> category_id (si el backend espera id)
+            if (fd.has('category') && !fd.has('category_id')) {
+                fd.append('category_id', fd.get('category'));
+            }
+
+            // category -> categoria (alias ES)
+            if (fd.has('category') && !fd.has('categoria')) {
+                fd.append('categoria', fd.get('category'));
+            }
+
+            // categoria -> category (inverse mapping para robustez)
+            if (!fd.has('category') && fd.has('categoria')) {
+                fd.append('category', fd.get('categoria'));
+            }
+
+            // main_image -> imagen_principal (alias común en ES)
+            const mainFromFd = fd.get('main_image');
+            const mainFile = (mainFromFd instanceof File) ? mainFromFd : null;
+            if (mainFile && !fd.has('imagen_principal')) {
+                fd.append('imagen_principal', mainFile);
+            }
+
+            // gallery_images[] -> galeria_imagenes[] (alias ES)
+            const gallery = fd.getAll('gallery_images[]');
+            if (gallery && gallery.length > 0) {
+                gallery.forEach(f => {
+                    if (f instanceof File) fd.append('galeria_imagenes[]', f);
+                });
+            }
+
+            // Duplicados de texto: name -> nombre, description -> descripcion, price -> precio, stock -> existencias
+            const pairs = [
+                ['name', 'nombre'],
+                ['description', 'descripcion'],
+                ['price', 'precio'],
+                ['stock', 'existencias']
+            ];
+            pairs.forEach(([src, dst]) => {
+                if (fd.has(src) && !fd.has(dst)) {
+                    fd.append(dst, fd.get(src));
+                }
+            });
+        } catch (e) {
+            console.warn('⚠️ [FORM] No se pudieron agregar aliases de compatibilidad:', e);
+        }
+        return fd;
+    }
+
+    /**
      * Realiza una petición a la API
      * @param {string} endpoint - Endpoint de la API
      * @param {Object} options - Opciones de la petición
@@ -221,12 +438,20 @@ window.ProductManager = (function() {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-CSRF-TOKEN': _getCsrfToken()
-            }
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin'
         };
 
         const mergedOptions = { ...defaultOptions, ...options };
+
+        // Adjuntar Bearer token si está disponible
+        try {
+            const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+            if (token) {
+                mergedOptions.headers = { ...(mergedOptions.headers || {}), Authorization: `Bearer ${token}` };
+            }
+        } catch {}
 
         try {
             console.log(`📡 [API] ${mergedOptions.method} ${endpoint}`, {
@@ -234,13 +459,19 @@ window.ProductManager = (function() {
                 body: mergedOptions.body ? '[Body included]' : undefined
             });
 
-            const response = await fetch(`${config.apiBaseUrl}${endpoint}`, mergedOptions);
+            const fullUrl = endpoint.startsWith('http') ? endpoint : `${config.apiBaseUrl}${endpoint}`;
+            const response = await fetch(fullUrl, mergedOptions);
 
             console.log(`📥 [API] Respuesta ${response.status} ${response.statusText}`);
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || `Error ${response.status}: ${response.statusText}`);
+                const err = new Error(errorData?.message || errorData?.error || `Error ${response.status}: ${response.statusText}`);
+                err.status = response.status;
+                if (response.status === 422 && errorData?.errors) {
+                    err.validation = errorData.errors; // { campo: [mensajes] }
+                }
+                throw err;
             }
 
             return await response.json();
@@ -414,9 +645,12 @@ window.ProductManager = (function() {
                 }
             }
 
-            // Validar imagen principal
-            const mainImageInput = document.getElementById('product-main-image');
+            // Validar imagen principal (soporta edición y creación)
+            const editMainInput = document.getElementById('edit-main-image');
+            const createMainInput = document.getElementById('product-main-image');
+            const mainImageInput = editMainInput || createMainInput;
             if (!mainImageInput || mainImageInput.files.length === 0) {
+                // En creación, no hay currentProduct; en edición, permitimos si ya existe imagen guardada
                 if (!currentProduct || !currentProduct.main_image) {
                     errors.push('La imagen principal es obligatoria');
                 }
@@ -461,7 +695,7 @@ window.ProductManager = (function() {
 
                 errorContainer.appendChild(errorList);
 
-                const form = document.getElementById('producto-form');
+                const form = document.getElementById('edit-product-form') || document.getElementById('producto-form');
                 if (form) {
                     form.insertBefore(errorContainer, form.firstChild);
                     form.scrollIntoView({ behavior: 'smooth' });
@@ -481,19 +715,47 @@ window.ProductManager = (function() {
 
                 // Mostrar loading
                 const loadingElement = document.getElementById('productos-loading');
-                const productosContainer = document.querySelector('#productos .grid');
+                const productosContainer = document.querySelector('#productos .grid') || document.getElementById('contenedor-productos');
 
                 if (loadingElement) loadingElement.classList.remove('hidden');
                 if (productosContainer) productosContainer.innerHTML = '';
 
-                const response = await _apiRequest('/products');
+                // Preferir endpoint del emprendedor autenticado con fallback y memoria de 404
+                const response = await _apiRequestWithFallback(
+                    EP_PRODUCTS,
+                    EP_PRODUCTS_FALLBACK,
+                    {},
+                    window.__USE_PRODUCTS_FALLBACK === true
+                );
 
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al cargar productos');
+                // Tolerar diferentes formas de respuesta
+                let items = [];
+                if (Array.isArray(response)) items = response;
+                else if (response && Array.isArray(response.data)) items = response.data;
+                else if (response && Array.isArray(response.products)) items = response.products;
+                else if (response && response.product) items = [response.product];
+
+                // Determinar si el endpoint usado es genérico (/products) y debemos filtrar por emprendedor
+                const endpointLooksGeneric = (/\/products(\b|\/|$)/.test(EP_PRODUCTS) && !/\/entrepreneur\//.test(EP_PRODUCTS))
+                    || (window.__USE_PRODUCTS_FALLBACK === true && /\/products(\b|\/|$)/.test(EP_PRODUCTS_FALLBACK));
+
+                let filteredItems = items;
+                if (endpointLooksGeneric) {
+                    const eid = await _getEntrepreneurId();
+                    if (eid != null) {
+                        filteredItems = (items || []).filter(p => {
+                            const owner = _getOwnerIdFromProduct(p);
+                            return owner != null && String(owner) === String(eid);
+                        });
+                        console.log(`🧩 [PRODUCTS] Filtrados por emprendedor #${eid}: ${filteredItems.length}/${items.length}`);
+                    } else {
+                        console.warn('⚠️ [PRODUCTS] No se pudo determinar el entrepreneur_id; mostrando 0 productos en "Mis Productos"');
+                        filteredItems = [];
+                    }
                 }
 
-                currentProducts = response.data;
-                console.log(`✅ [PRODUCTS] ${currentProducts.length} productos cargados`);
+                currentProducts = filteredItems;
+                console.log(`✅ [PRODUCTS] ${currentProducts.length} productos listados en Mis Productos`);
 
                 this.displayProducts(currentProducts);
 
@@ -511,7 +773,7 @@ window.ProductManager = (function() {
          * @param {Array} products - Lista de productos
          */
         displayProducts: function(products) {
-            const productosContainer = document.querySelector('#productos .grid');
+            const productosContainer = document.querySelector('#productos .grid') || document.getElementById('contenedor-productos');
             if (!productosContainer) {
                 console.warn('⚠️ [PRODUCTS] Contenedor de productos no encontrado');
                 return;
@@ -554,13 +816,14 @@ window.ProductManager = (function() {
             const precioTexto = product.price ? _formatPrice(product.price) : 'Precio no disponible';
             const categoria = _getCategoryName(product.category);
 
+            const resolvedImg = _resolveImageUrl(product.main_image || '');
             card.innerHTML = `
                 <div class="h-48 bg-gray-100 flex items-center justify-center overflow-hidden">
-                    ${product.main_image ?
-                        `<img src="${product.main_image.startsWith('http') ? product.main_image : `/storage/${product.main_image}`}"
+                    ${resolvedImg ?
+                        `<img src="${resolvedImg}"
                               alt="${product.name}"
                               class="w-full h-full object-cover"
-                              onerror="this.src='https://via.placeholder.com/300x300?text=Producto'">` :
+                              onerror="this.onerror=null;this.src='${PLACEHOLDER_IMG}'">` :
                         `<svg class="w-16 h-16 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
                             <path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z"/>
                         </svg>`
@@ -601,7 +864,7 @@ window.ProductManager = (function() {
          * @param {string} message - Mensaje de error
          */
         showProductsError: function(message) {
-            const productosContainer = document.querySelector('#productos .grid');
+            const productosContainer = document.querySelector('#productos .grid') || document.getElementById('contenedor-productos');
             if (productosContainer) {
                 productosContainer.innerHTML = `
                     <div class="col-span-full text-center py-12">
@@ -625,7 +888,8 @@ window.ProductManager = (function() {
          * @returns {Promise} Promesa con el resultado
          */
         async saveProduct(formData, method = 'POST', productId = null) {
-            const endpoint = productId ? `/products/${productId}` : '/products';
+            const endpoint = productId ? `${EP_PRODUCTS}/${productId}` : EP_PRODUCTS;
+            const endpointFallback = productId ? `${EP_PRODUCTS_FALLBACK}/${productId}` : EP_PRODUCTS_FALLBACK;
 
             try {
                 console.log(`📤 [PRODUCTS] ${method} ${endpoint}`);
@@ -635,26 +899,66 @@ window.ProductManager = (function() {
                     formData.append('_method', 'PUT');
                 }
 
-                const response = await _apiRequest(endpoint, {
+                // Asegurar entrepreneur_id si el backend lo exige
+                if (!formData.has('entrepreneur_id')) {
+                    const eid = await _getEntrepreneurId();
+                    if (eid) {
+                        formData.append('entrepreneur_id', eid);
+                        console.log('🔑 [PRODUCTS] Adjuntado entrepreneur_id:', eid);
+                    } else {
+                        console.warn('⚠️ [PRODUCTS] No se pudo determinar entrepreneur_id; el backend podría rechazar la solicitud (422)');
+                    }
+                }
+
+                // Aumentar compatibilidad de nombres de campos antes de enviar
+                _augmentCompatibilityFormData(formData);
+
+                let response = await _apiRequestWithFallback(endpoint, endpointFallback, {
                     method: 'POST', // Laravel usa POST con _method=PUT
                     body: formData
                 });
 
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al guardar el producto');
+                // Normalizar respuesta
+                const saved = response?.data || response?.product || response;
+                const message = response?.message || 'Producto guardado exitosamente';
+
+                if (!saved) {
+                    throw new Error('Respuesta inesperada al guardar el producto');
                 }
 
-                return {
-                    success: true,
-                    data: response.data,
-                    message: response.message || 'Producto guardado exitosamente'
-                };
+                return { success: true, data: saved, message };
 
             } catch (error) {
                 console.error('❌ [PRODUCTS] Error al guardar producto:', error);
+                let errorList = [];
+                if (error?.status === 422 && error?.validation) {
+                    for (const [field, messages] of Object.entries(error.validation)) {
+                        (messages || []).forEach(msg => errorList.push(`${field}: ${msg}`));
+                    }
+                    if (errorList.length === 0 && error.message) errorList.push(error.message);
+                } else if (error?.status === 422) {
+                    // Cuando el backend devuelve 422 sin 'validation', intentar extraer 'errors'
+                    try {
+                        const raw = error?.message || '';
+                        if (raw) errorList.push(raw);
+                    } catch {}
+                } else if (error?.status === 500) {
+                    // Mensaje amigable para errores 500 (p. ej., columna category requerida en backend)
+                    errorList.push('Ocurrió un error interno al guardar el producto. Intenta de nuevo en unos minutos.');
+                    // Pista técnica (no expone SQL crudo al usuario final)
+                    errorList.push('Nota técnica: el backend requiere aceptar/persistir el campo "category" (o mapear desde "categoria").');
+                } else if (error?.message) {
+                    // Evitar mostrar SQLSTATE al usuario final
+                    const sanitized = /SQLSTATE|insert into|mysql|Connection:/i.test(error.message)
+                        ? 'Ocurrió un error al guardar el producto. Por favor intenta de nuevo.'
+                        : error.message;
+                    errorList.push(sanitized);
+                } else {
+                    errorList.push('Error desconocido al guardar el producto');
+                }
                 return {
                     success: false,
-                    errors: [error.message],
+                    errors: errorList,
                     message: 'Error al guardar el producto'
                 };
             }
@@ -689,15 +993,15 @@ window.ProductManager = (function() {
                     _toggleButtonLoading(btn, true, 'Eliminando...');
                 });
 
-                const response = await _apiRequest(`/products/${id}`, {
+                const response = await _apiRequestWithFallback(`${EP_PRODUCTS}/${id}`, `${EP_PRODUCTS_FALLBACK}/${id}`, {
                     method: 'DELETE'
                 });
 
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al eliminar el producto');
-                }
+                // Considerar que un 200/204 ya es suficiente
+                const ok = response?.success !== false;
+                if (!ok) throw new Error(response?.message || 'Error al eliminar el producto');
 
-                _showSuccess('Producto eliminado correctamente');
+                _showSuccess(response?.message || 'Producto eliminado correctamente');
                 this.loadProducts();
 
             } catch (error) {
@@ -723,13 +1027,13 @@ window.ProductManager = (function() {
                 // Mostrar loading
                 this.showEditLoading();
 
-                const response = await _apiRequest(`/products/${id}`);
+                const response = await _apiRequestWithFallback(`${EP_PRODUCTS}/${id}`, `${EP_PRODUCTS_FALLBACK}/${id}`);
 
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al cargar los datos del producto');
+                // Normalizar
+                currentProduct = response?.data || response?.product || response;
+                if (!currentProduct) {
+                    throw new Error('No se encontró el producto');
                 }
-
-                currentProduct = response.data;
                 this.showEditModal(currentProduct);
 
             } catch (error) {
@@ -911,11 +1215,13 @@ window.ProductManager = (function() {
 
             // Imagen principal
             if (product.main_image) {
+                const mainResolved = _resolveImageUrl(product.main_image);
                 imagesHtml += `
                     <div class="relative group">
-                        <img src="${product.main_image.startsWith('http') ? product.main_image : `/storage/${product.main_image}`}"
+                        <img src="${mainResolved}"
                              alt="Imagen principal"
-                             class="w-full h-20 object-cover rounded">
+                             class="w-full h-20 object-cover rounded"
+                             onerror="this.onerror=null;this.src='${PLACEHOLDER_IMG}'">
                         <div class="absolute inset-0 bg-black bg-opacity-50 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-center justify-center">
                             <span class="text-white text-xs">Principal</span>
                         </div>
@@ -926,11 +1232,13 @@ window.ProductManager = (function() {
             // Galería de imágenes
             if (product.gallery_images && product.gallery_images.length > 0) {
                 product.gallery_images.forEach((image, index) => {
+                    const imgResolved = _resolveImageUrl(image);
                     imagesHtml += `
                         <div class="relative group">
-                            <img src="${image.startsWith('http') ? image : `/storage/${image}`}"
+                            <img src="${imgResolved}"
                                  alt="Imagen ${index + 1}"
-                                 class="w-full h-20 object-cover rounded">
+                                 class="w-full h-20 object-cover rounded"
+                                 onerror="this.onerror=null;this.src='${PLACEHOLDER_IMG}'">
                             <div class="absolute inset-0 bg-black bg-opacity-50 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-center justify-center">
                                 <span class="text-white text-xs">Galería ${index + 1}</span>
                             </div>
@@ -1021,6 +1329,7 @@ window.ProductManager = (function() {
             }
 
             // Validar datos básicos
+            console.debug('📝 [PRODUCTS] Validando datos antes de actualizar', Array.from(formData.entries()));
             const errors = this.validateProductForm(formData);
             if (errors.length > 0) {
                 this.showErrors(errors);
@@ -1040,6 +1349,10 @@ window.ProductManager = (function() {
                     closeModalCallback();
                     this.loadProducts();
                 } else {
+                    // Mostrar errores del backend si vienen
+                    if (response.errors && Array.isArray(response.errors)) {
+                        this.showErrors(response.errors);
+                    }
                     throw new Error(response.message || 'Error al actualizar el producto');
                 }
 
@@ -1061,13 +1374,36 @@ window.ProductManager = (function() {
                 return;
             }
 
+            // Evitar múltiples bindings del mismo submit
+            if (productForm.dataset.bound === 'true') return;
+            productForm.dataset.bound = 'true';
+
             productForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
+                // Evitar envíos duplicados mientras hay una solicitud en curso
+                if (productForm.dataset.submitting === 'true') {
+                    console.warn('⚠️ [PRODUCTS] Envío ignorado: ya hay una solicitud en curso');
+                    return;
+                }
+                productForm.dataset.submitting = 'true';
                 const submitButton = e.target.querySelector('button[type="submit"]');
                 const originalButtonText = submitButton.innerHTML;
 
                 // Crear FormData con todos los campos del formulario
                 const formData = new FormData(productForm);
+
+                // Normalizar/forzar categoría desde cualquiera de los campos posibles
+                const categoryFromForm =
+                    formData.get('category') ||
+                    productForm.querySelector('[name="category"]')?.value ||
+                    formData.get('categoria') ||
+                    productForm.querySelector('[name="categoria"]')?.value || '';
+
+                if (categoryFromForm) {
+                    formData.set('category', categoryFromForm);
+                    if (!formData.get('categoria')) formData.append('categoria', categoryFromForm);
+                    if (!formData.get('category_id')) formData.append('category_id', categoryFromForm);
+                }
 
                 // Validar formulario
                 const errors = this.validateProductForm(formData);
@@ -1112,6 +1448,7 @@ window.ProductManager = (function() {
                     ]);
                 } finally {
                     _toggleButtonLoading(submitButton, false, originalButtonText);
+                    productForm.dataset.submitting = 'false';
                 }
             });
         },
@@ -1230,18 +1567,21 @@ window.ProductManager = (function() {
         setupGlobalEvents: function() {
             // Eventos para botones de edición y eliminación
             document.addEventListener('click', (e) => {
-                if (e.target.classList.contains('btn-editar')) {
+                const editBtn = e.target.closest('.btn-editar');
+                if (editBtn) {
                     e.preventDefault();
-                    const productId = e.target.getAttribute('data-product-id');
+                    const productId = editBtn.getAttribute('data-product-id');
                     if (productId) {
                         this.loadProductData(productId);
                     }
+                    return;
                 }
 
-                if (e.target.classList.contains('btn-eliminar')) {
+                const delBtn = e.target.closest('.btn-eliminar');
+                if (delBtn) {
                     e.preventDefault();
-                    const productId = e.target.getAttribute('data-product-id');
-                    const productName = e.target.getAttribute('data-product-name');
+                    const productId = delBtn.getAttribute('data-product-id');
+                    const productName = delBtn.getAttribute('data-product-name');
                     if (productId && productName) {
                         this.deleteProduct(productId, productName);
                     }
@@ -1253,6 +1593,13 @@ window.ProductManager = (function() {
 
 // Inicialización cuando el DOM esté listo
 document.addEventListener('DOMContentLoaded', () => {
+    // Evitar doble inicialización si el script se carga dos veces
+    if (window.__PRODUCT_MANAGER_INITIALIZED) {
+        console.debug('ℹ️ [PRODUCTS] Inicialización omitida: ProductManager ya está inicializado.');
+        return;
+    }
+    window.__PRODUCT_MANAGER_INITIALIZED = true;
+
     ProductManager.init();
 
     // Funciones globales para mantener compatibilidad

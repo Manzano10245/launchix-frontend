@@ -3,6 +3,8 @@
  * Versión adaptada para consumir API con manejo de errores mejorado
  */
 
+import './config.js';
+
 console.log('🟢 [INIT] Cargando entrepreneurProfile.js');
 
 // Esperar a que el DOM esté completamente cargado
@@ -21,7 +23,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const charCounter = document.getElementById('char-counter');
     const descriptionTextarea = document.getElementById('description');
 
-    // Verificar elementos críticos
+    // Si no hay ningún elemento clave de perfil, omitir inicialización para evitar ruidos en consola
+    const hasAnyProfileElem = !!(profileForm || avatarInput || avatarPreview || deleteAvatarBtn || submitBtn || cancelBtn);
+    if (!hasAnyProfileElem) {
+        console.info('ℹ️ [PROFILE] Elementos de perfil no presentes en esta vista; se omite la inicialización del módulo.');
+        return; // Salir silenciosamente
+    }
+
+    // Verificar elementos críticos (solo si hay alguno para trabajar)
     console.log('🔍 [DOM] Elementos encontrados:', {
         profileForm: !!profileForm,
         avatarInput: !!avatarInput,
@@ -50,14 +59,20 @@ document.addEventListener('DOMContentLoaded', function() {
         showLoading(true);
 
         try {
-            const response = await fetch('/api/entrepreneur/profile', {
+            const url = window.API_FULL(window.API_EP_ME || `${(window.API_PREFIX||'/api/v1')}/entrepreneur/me`);
+            const headers = {
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            };
+            try {
+                const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+            } catch {}
+
+            const response = await fetch(url, {
                 method: 'GET',
-                headers: {
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'X-CSRF-TOKEN': getCsrfToken()
-                },
-                credentials: 'same-origin'
+                headers,
+                credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin'
             });
 
             if (!response.ok) {
@@ -68,12 +83,13 @@ document.addEventListener('DOMContentLoaded', function() {
             const data = await response.json();
             console.log('📦 [API] Datos recibidos:', data);
 
-            if (!data.success) {
-                throw new Error(data.message || 'Error al cargar los datos del perfil');
+            const payload = data.data || data.user || data;
+            if (!payload) {
+                throw new Error((data && data.message) || 'Respuesta inválida al cargar el perfil');
             }
 
-            populateProfileData(data.data);
-            originalData = { ...data.data };
+            populateProfileData(payload);
+            originalData = { ...payload };
             console.log('✅ [DATA] Datos del perfil cargados correctamente desde API');
 
         } catch (error) {
@@ -225,14 +241,20 @@ document.addEventListener('DOMContentLoaded', function() {
             try {
                 console.log('📤 [FORM] Enviando datos a API:', Object.fromEntries(formData));
 
-                const response = await fetch('/api/entrepreneur/profile', {
+                const url = window.API_FULL(window.API_EP_ME || `${(window.API_PREFIX||'/api/v1')}/entrepreneur/me`);
+                const headers = {
+                    'Accept': 'application/json'
+                };
+                try {
+                    const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+                    if (token) headers['Authorization'] = `Bearer ${token}`;
+                } catch {}
+
+                const response = await fetch(url, {
                     method: 'PUT',
-                    headers: {
-                        'X-CSRF-TOKEN': getCsrfToken(),
-                        'Accept': 'application/json'
-                    },
+                    headers,
                     body: formData,
-                    credentials: 'same-origin'
+                    credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin'
                 });
 
                 if (!response.ok) {
@@ -243,11 +265,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 const data = await response.json();
                 console.log('📦 [API] Respuesta de actualización:', data);
 
-                if (data.success) {
+                if (data.success || data.data || data.user) {
                     console.log('✅ [UPDATE] Perfil actualizado correctamente via API');
                     showAlert('Perfil actualizado correctamente', 'success');
-                    populateProfileData(data.data);
-                    originalData = { ...data.data };
+                    const payload = data.data || data.user || data;
+                    populateProfileData(payload);
+                    originalData = { ...payload };
                 } else {
                     console.error('❌ [UPDATE] Actualización fallida:', data);
                     if (data.errors) {
@@ -267,7 +290,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     } else {
-        console.error('❌ [DOM] No se encontró el formulario de perfil');
+        console.warn('⚠️ [DOM] No se encontró el formulario de perfil');
     }
 
     // ============================================
@@ -320,7 +343,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         });
     } else {
-        console.error('❌ [DOM] No se encontró el input de avatar');
+        console.warn('⚠️ [DOM] No se encontró el input de avatar');
     }
 
     /**
@@ -334,14 +357,18 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             showLoading(true);
 
-            const response = await fetch('/api/entrepreneur/avatar', {
+            const url = window.API_FULL(window.API_EP_AVATAR || `${(window.API_PREFIX||'/api/v1')}/entrepreneur/avatar`);
+            const headers = { 'Accept': 'application/json' };
+            try {
+                const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+            } catch {}
+
+            const response = await fetch(url, {
                 method: 'POST',
-                headers: {
-                    'X-CSRF-TOKEN': getCsrfToken(),
-                    'Accept': 'application/json'
-                },
+                headers,
                 body: formData,
-                credentials: 'same-origin'
+                credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin'
             });
 
             if (!response.ok) {
@@ -352,11 +379,12 @@ document.addEventListener('DOMContentLoaded', function() {
             const data = await response.json();
             console.log('📦 [API] Respuesta de subida de avatar:', data);
 
-            if (data.success) {
+                if (data.success || data.avatar_url || (data.data && data.data.avatar_url)) {
                 console.log('✅ [AVATAR] Avatar actualizado correctamente via API');
                 showAlert('Foto de perfil actualizada', 'success');
-                currentAvatarUrl = data.avatar_url;
-                if (avatarPreview) avatarPreview.src = data.avatar_url;
+                    const avatarUrl = data.avatar_url || (data.data && data.data.avatar_url) || currentAvatarUrl;
+                    currentAvatarUrl = avatarUrl;
+                    if (avatarPreview && avatarUrl) avatarPreview.src = avatarUrl;
                 hasCustomAvatar = true;
                 if (deleteAvatarBtn) deleteAvatarBtn.classList.remove('hidden');
             } else {
@@ -393,14 +421,20 @@ document.addEventListener('DOMContentLoaded', function() {
             try {
                 showLoading(true);
 
-                const response = await fetch('/api/entrepreneur/avatar', {
+                const url = window.API_FULL(window.API_EP_AVATAR || `${(window.API_PREFIX||'/api/v1')}/entrepreneur/avatar`);
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                };
+                try {
+                    const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+                    if (token) headers['Authorization'] = `Bearer ${token}`;
+                } catch {}
+
+                const response = await fetch(url, {
                     method: 'DELETE',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': getCsrfToken(),
-                        'Accept': 'application/json'
-                    },
-                    credentials: 'same-origin'
+                    headers,
+                    credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin'
                 });
 
                 if (!response.ok) {
@@ -431,7 +465,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     } else {
-        console.error('❌ [DOM] No se encontró el botón de eliminar avatar');
+        console.warn('⚠️ [DOM] No se encontró el botón de eliminar avatar');
     }
 
     // ============================================
@@ -453,7 +487,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     } else {
-        console.error('❌ [DOM] No se encontró el botón cancelar');
+        console.warn('⚠️ [DOM] No se encontró el botón cancelar');
     }
 
     /**

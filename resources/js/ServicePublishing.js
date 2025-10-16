@@ -1,15 +1,17 @@
+import './config.js';
 /**
  * ServicePublishing.js - Gestión completa de servicios con integración API
- * Versión mejorada con manejo de errores robusto, validación avanzada y funcionalidad optimizada
+ * Adaptado para usar API_BASE_URL + API_PREFIX y Bearer token para emprendedor
  */
 
 // Módulo de gestión de servicios
 const ServiceManager = (function() {
     // Configuración privada
     const config = {
-        apiBaseUrl: '/api',
+        // Base completa: http(s)://host + /api/v1 (o lo configurado)
+        apiBaseUrl: ((window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1')).replace(/\/$/, ''),
         maxImageSize: 2 * 1024 * 1024, // 2MB
-        allowedImageTypes: ['image/jpeg', 'image/png', 'image/jpg'],
+    allowedImageTypes: ['image/jpeg', 'image/png', 'image/jpg', 'image/webp', 'image/gif'],
         maxGalleryImages: 5,
         minDescriptionLength: 10,
         maxPriceLimit: 999999999,
@@ -17,11 +19,65 @@ const ServiceManager = (function() {
         debounceTime: 300
     };
 
+    // Endpoints relativos configurables (el base ya incluye API_PREFIX)
+    // Backend confirmado: apiResource('servicios', ServicioController::class)
+    const EP_SERVICES = (window.API_REL_EP_SERVICES || '/servicios');
+    const EP_SERVICES_FALLBACK = (window.API_REL_EP_SERVICES_FALLBACK || '/servicios');
+    const EP_SERVICES_DETAIL_VARIANTS = [EP_SERVICES];
+
+    async function _apiRequestWithFallback(primary, fallback, options = {}, preferFallback = false) {
+        // Si ya detectamos que el primario no existe, usar directamente fallback
+        if (preferFallback === true || window.__USE_SERVICES_FALLBACK === true) {
+            return _apiRequest(fallback, options);
+        }
+        try {
+            return await _apiRequest(primary, options);
+        } catch (e1) {
+            if (e1 && (/could not be found/i.test(e1.message || '') || e1.message?.includes('404'))) {
+                window.__USE_SERVICES_FALLBACK = true;
+            }
+            console.debug('⚠️ [API] Intentando fallback de endpoint:', primary, '->', fallback, e1?.message);
+            try {
+                return await _apiRequest(fallback, options);
+            } catch (e2) {
+                throw e2;
+            }
+        }
+    }
+
     // Estado privado
     let currentServices = [];
     let currentService = null;
     let isLoading = false;
     let lastLoadedServices = null;
+
+    function _hasFiles(fd) {
+        try {
+            for (const [, v] of fd.entries()) {
+                if (v instanceof File) return true;
+            }
+        } catch {}
+        return false;
+    }
+
+    function _formDataToObject(fd, { dropFileFields = true } = {}) {
+        const obj = {};
+        const arrays = {};
+        const isArrayKey = k => /\[\]$/.test(k);
+        const baseKey = k => k.replace(/\[\]$/, '');
+        for (const [k, v] of fd.entries()) {
+            if (dropFileFields && (v instanceof File)) continue;
+            if (isArrayKey(k)) {
+                const b = baseKey(k);
+                if (!arrays[b]) arrays[b] = [];
+                arrays[b].push(v);
+            } else {
+                // primer valor gana si repetido
+                if (!(k in obj)) obj[k] = v;
+            }
+        }
+        return { ...obj, ...arrays };
+    }
 
     // ============================================
     // MÉTODOS PRIVADOS
@@ -129,10 +185,15 @@ const ServiceManager = (function() {
             };
             errorContainer.appendChild(copyButton);
 
-            const form = document.getElementById('servicio-form');
+            // Preferir el formulario del modal de edición si existe
+            const editForm = document.getElementById('edit-service-form');
+            const form = editForm || document.getElementById('servicio-form');
             if (form) {
                 form.insertBefore(errorContainer, form.firstChild);
                 form.scrollIntoView({ behavior: 'smooth' });
+            } else {
+                // fallback al cuerpo si no hay forms
+                document.body.prepend(errorContainer);
             }
 
             return false;
@@ -175,17 +236,41 @@ const ServiceManager = (function() {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-CSRF-TOKEN': _getCsrfToken()
-            }
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin'
         };
 
         const mergedOptions = { ...defaultOptions, ...options };
+        // Bearer token si existe
+        try {
+            const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+            if (token) {
+                mergedOptions.headers = { ...(mergedOptions.headers || {}), Authorization: `Bearer ${token}` };
+            }
+        } catch {}
+
+        // Agregar CSRF token para métodos de escritura si existe meta
+        try {
+            const method = (mergedOptions.method || 'GET').toUpperCase();
+            if (method !== 'GET') {
+                const meta = document.querySelector('meta[name="csrf-token"]');
+                if (meta && meta.content) {
+                    mergedOptions.headers = { ...(mergedOptions.headers || {}), 'X-CSRF-TOKEN': meta.content };
+                }
+            }
+        } catch {}
 
         try {
             console.log(`📡 [API] ${mergedOptions.method} ${endpoint}`);
 
-            const response = await fetch(`${config.apiBaseUrl}${endpoint}`, mergedOptions);
+            let url = endpoint.startsWith('http') ? endpoint : `${config.apiBaseUrl}${endpoint}`;
+            // Cache-busting para GET
+            if ((mergedOptions.method || 'GET').toUpperCase() === 'GET') {
+                const sep = url.includes('?') ? '&' : '?';
+                url = `${url}${sep}_=${Date.now()}`;
+            }
+            const response = await fetch(url, mergedOptions);
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
@@ -208,7 +293,7 @@ const ServiceManager = (function() {
     function _validateImageFile(file) {
         if (!file) return false;
         if (!config.allowedImageTypes.includes(file.type)) {
-            _showToast('Tipo de archivo no válido. Solo se permiten JPG/PNG.', 'error');
+            _showToast('Tipo de archivo no válido. Solo se permiten JPG/PNG/WebP/GIF.', 'error');
             return false;
         }
         if (file.size > config.maxImageSize) {
@@ -490,6 +575,82 @@ const ServiceManager = (function() {
 
     return {
         /**
+         * Aplica un mapeo de campos configurable desde localStorage
+         * Clave: SERVICE_UPDATE_FIELD_MAP => { fromKey: toKey, ..., _removeOriginal?: boolean }
+         * @param {FormData} fd
+         */
+        _applyFieldMap(fd) {
+            if (!fd) return fd;
+            try {
+                const raw = localStorage.getItem('SERVICE_UPDATE_FIELD_MAP');
+                if (!raw) return fd;
+                const map = JSON.parse(raw);
+                const removeOriginal = !!map._removeOriginal;
+                Object.entries(map).forEach(([from, to]) => {
+                    if (from === '_removeOriginal') return;
+                    if (typeof to !== 'string' || !to) return;
+                    if (fd.has(from) && !fd.has(to)) {
+                        fd.append(to, fd.get(from));
+                    }
+                    if (removeOriginal && fd.has(from)) {
+                        // No hay API para eliminar entradas específicas de FormData; recreamos
+                    }
+                });
+                if (removeOriginal) {
+                    const next = new FormData();
+                    for (const [k, v] of fd.entries()) {
+                        if (map[k] === undefined) next.append(k, v);
+                    }
+                    return next;
+                }
+            } catch (e) {
+                console.warn('⚠️ [SERVICES] No se pudo aplicar SERVICE_UPDATE_FIELD_MAP:', e?.message || e);
+            }
+            return fd;
+        },
+        /**
+         * Agrega alias/espejos de campos para compatibilidad con distintos backends
+         * (es/en y variantes). No elimina los originales, solo añade si faltan.
+         * @param {FormData} fd
+         */
+        _augmentServiceFormData(fd) {
+            if (!fd) return fd;
+            try {
+                const pairs = [
+                    ['nombre_servicio', 'nombre'],
+                    ['nombre_servicio', 'name'],
+                    ['categoria', 'category'],
+                    ['categoria', 'category_id'],
+                    ['descripcion', 'description'],
+                    ['direccion', 'address'],
+                    ['telefono', 'phone'],
+                    ['precio_base', 'price'],
+                    ['precio_base', 'precio'],
+                    ['horario_atencion', 'schedule'],
+                    ['horario_atencion', 'horario']
+                ];
+                pairs.forEach(([src, dst]) => {
+                    if (fd.has(src) && !fd.has(dst)) fd.append(dst, fd.get(src));
+                });
+
+                // Imágenes
+                const main = fd.get('imagen_principal');
+                if (main instanceof File) {
+                    if (!fd.has('main_image')) fd.append('main_image', main);
+                    if (!fd.has('imagen')) fd.append('imagen', main);
+                }
+                const galeria = fd.getAll('galeria_imagenes[]');
+                if (galeria && galeria.length) {
+                    galeria.forEach(f => {
+                        if (f instanceof File) fd.append('gallery_images[]', f);
+                    });
+                }
+            } catch (e) {
+                console.warn('⚠️ [SERVICES] No se pudieron agregar alias de compatibilidad:', e?.message || e);
+            }
+            return fd;
+        },
+        /**
          * Inicializa el manager de servicios
          */
         init: function() {
@@ -509,6 +670,15 @@ const ServiceManager = (function() {
             this.setupGlobalEvents();
 
             console.log('✅ [SERVICES] ServiceManager inicializado correctamente');
+        },
+
+        /**
+         * Muestra errores de validación de forma pública
+         * @param {Array<string>} errors
+         * @returns {boolean} true si no hay errores
+         */
+        showErrors: function(errors) {
+            return _showErrors(errors || []);
         },
 
         /**
@@ -557,6 +727,13 @@ const ServiceManager = (function() {
             input.addEventListener('change', (e) => {
                 this.handleFiles(e.target.files, preview, inputId);
             });
+        },
+
+        /**
+         * Expone el modal de galería de imágenes públicamente
+         */
+        showGalleryModal: function(serviceId, startIdx = 0) {
+            return _showGalleryModal(serviceId, startIdx);
         },
 
         /**
@@ -659,23 +836,28 @@ const ServiceManager = (function() {
          * Carga servicios desde el servidor
          */
         async loadServicios() {
+            // Definir elementos fuera del try para que existan en finally
+            const loadingElement = document.getElementById('servicios-loading');
+            const serviciosContainer = document.querySelector('#servicios .grid');
             try {
                 console.log('🔄 [SERVICES] Cargando servicios desde API');
-
-                // Mostrar loading
-                const loadingElement = document.getElementById('servicios-loading');
-                const serviciosContainer = document.querySelector('#servicios .grid');
 
                 if (loadingElement) loadingElement.classList.remove('hidden');
                 if (serviciosContainer) serviciosContainer.innerHTML = '';
 
-                const response = await _apiRequest('/services');
+                // Usar fallback automático cuando /entrepreneur/services no exista
+                const response = await _apiRequestWithFallback(EP_SERVICES, EP_SERVICES_FALLBACK, {
+                    method: 'GET'
+                }, window.__USE_SERVICES_FALLBACK === true);
 
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al cargar servicios');
-                }
+                // Normalizar respuesta
+                let items = [];
+                if (Array.isArray(response)) items = response;
+                else if (response && Array.isArray(response.data)) items = response.data;
+                else if (response && Array.isArray(response.services)) items = response.services;
+                else if (response && response.service) items = [response.service];
 
-                currentServices = response.data;
+                currentServices = items;
                 lastLoadedServices = [...currentServices];
                 console.log(`✅ [SERVICES] ${currentServices.length} servicios cargados`);
 
@@ -700,10 +882,11 @@ const ServiceManager = (function() {
          * @param {Array} servicios - Lista de servicios
          */
         displayServicios: function(servicios) {
-            const serviciosContainer = document.getElementById('services-grid');
+            const serviciosContainer = document.getElementById('services-grid') || document.querySelector('#servicios .grid');
 
             if (!serviciosContainer) {
-                console.warn('⚠️ [SERVICES] Contenedor de servicios no encontrado');
+                // No emitir warning ruidoso en vistas que no tienen esta sección
+                console.debug('ℹ️ [SERVICES] No hay contenedor de servicios en esta vista.');
                 return;
             }
 
@@ -752,7 +935,39 @@ const ServiceManager = (function() {
                     }
                 }
 
-                const response = await _apiRequest('/services', {
+                // Asegurar entrepreneur_id si el backend lo requiere o para trazabilidad
+                try {
+                    if (!formData.has('entrepreneur_id')) {
+                        // Reutilizar endpoint de perfil de emprendedor definido en config
+                        const mePath = window.API_EP_ME || `${(window.API_PREFIX || '/api/v1')}/entrepreneur/me`;
+                        const base = (window.API_BASE_URL || '').replace(/\/$/, '');
+                        const url = `${base}${mePath.startsWith('/') ? mePath : `/${mePath}`}`;
+                        const headers = { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+                        try {
+                            const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+                            if (token) headers['Authorization'] = `Bearer ${token}`;
+                        } catch {}
+                        const res = await fetch(url, { method: 'GET', headers, credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                        if (res.ok) {
+                            const data = await res.json().catch(() => ({}));
+                            const payload = data?.data || data?.user || data?.entrepreneur || data;
+                            const eid = payload?.id || payload?.entrepreneur_id || null;
+                            if (eid != null) {
+                                formData.append('entrepreneur_id', eid);
+                                // Alias en español por si el backend lo espera
+                                if (!formData.has('emprendedor_id')) formData.append('emprendedor_id', eid);
+                                console.log('🔑 [SERVICES] Adjuntado entrepreneur_id:', eid);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('⚠️ [SERVICES] No se pudo adjuntar entrepreneur_id automáticamente:', e?.message || e);
+                }
+
+                // Aumentar compatibilidad de nombres de campos antes de enviar
+                this._augmentServiceFormData(formData);
+
+                const response = await _apiRequestWithFallback(EP_SERVICES, EP_SERVICES_FALLBACK, {
                     method: 'POST',
                     body: formData
                 });
@@ -761,10 +976,30 @@ const ServiceManager = (function() {
                     throw new Error(response.message || 'Error al guardar el servicio');
                 }
 
+                // Guardar asociación local: este emprendedor creó este servicio
+                try {
+                    const eid = formData.get('entrepreneur_id') || localStorage.getItem('ENTREPRENEUR_ID') || null;
+                    const srv = response.data?.service || response.data || response.service || null;
+                    const sid = (srv && (srv.id ?? srv.service_id)) || null;
+                    if (eid && sid) {
+                        const key = `MY_SERVICE_IDS:${eid}`;
+                        let ids = [];
+                        try { ids = JSON.parse(localStorage.getItem(key) || '[]'); } catch {}
+                        ids = Array.isArray(ids) ? ids : [];
+                        if (!ids.includes(sid)) {
+                            ids.push(sid);
+                            localStorage.setItem(key, JSON.stringify(ids));
+                            console.log(`🧩 [SERVICES] Asociado servicio ${sid} a emprendedor ${eid} (local cache)`);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('⚠️ [SERVICES] No se pudo guardar asociación local de servicio:', e?.message || e);
+                }
+
                 return {
-                    success: true,
-                    data: response.data,
-                    message: response.message || 'Servicio guardado exitosamente'
+                    success: response?.success !== false,
+                    data: response?.data || response?.service || response,
+                    message: response?.message || 'Servicio guardado exitosamente'
                 };
 
             } catch (error) {
@@ -805,12 +1040,25 @@ const ServiceManager = (function() {
                     _toggleButtonLoading(btn, true, 'Eliminando...');
                 });
 
-                const response = await _apiRequest(`/services/${id}`, {
-                    method: 'DELETE'
-                });
+                let delOk = false, lastErr = '';
+                try {
+                    const response = await _apiRequestWithFallback(`${EP_SERVICES}/${id}`, `${EP_SERVICES_FALLBACK}/${id}`, { method: 'DELETE' });
+                    delOk = response?.success !== false;
+                } catch (e) {
+                    lastErr = e?.message || String(e);
+                }
+                if (!delOk) {
+                    // Try detail variants in case fallback route is different language
+                    for (const v of EP_SERVICES_DETAIL_VARIANTS) {
+                        try {
+                            const resp = await _apiRequest(`${v}/${id}`, { method: 'DELETE' });
+                            delOk = true; break;
+                        } catch (e) { lastErr = e?.message || String(e); }
+                    }
+                }
 
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al eliminar el servicio');
+                if (!delOk) {
+                    throw new Error(lastErr || 'Error al eliminar el servicio');
                 }
 
                 _showToast('Servicio eliminado correctamente', 'success');
@@ -842,10 +1090,15 @@ const ServiceManager = (function() {
                 const serviceData = await this.getServicioById(id);
 
                 if (serviceData.success) {
-                    // Mostrar modal de edición con los datos
                     this.showEditModal(serviceData.data);
                 } else {
-                    _showToast(serviceData.message || 'Error al cargar los datos del servicio', 'error');
+                    // Fallback: si tenemos lista cargada en el manager, intenta encontrar ahí
+                    const alt = Array.isArray(currentServices) ? currentServices.find(s => String(s.id) === String(id)) : null;
+                    if (alt) {
+                        this.showEditModal(alt);
+                    } else {
+                        _showToast(serviceData.message || 'Error al cargar los datos del servicio', 'error');
+                    }
                 }
 
             } catch (error) {
@@ -861,16 +1114,31 @@ const ServiceManager = (function() {
          */
         async getServicioById(id) {
             try {
-                const response = await _apiRequest(`/services/${id}`);
-
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al obtener el servicio');
+                // Try both main and fallback; then try language variants
+                try {
+                    const response = await _apiRequestWithFallback(`${EP_SERVICES}/${id}`, `${EP_SERVICES_FALLBACK}/${id}`);
+                    return { success: true, data: response.data || response.service || response };
+                } catch (e1) {
+                    // Si el detalle devuelve 403 (No autorizado), intentar vía listado del usuario y tomar por ID
+                    const msg = (e1?.message || '').toLowerCase();
+                    if (msg.includes('no autorizado') || msg.includes('403')) {
+                        try {
+                            const list = await _apiRequest(EP_SERVICES, { method: 'GET' });
+                            const items = Array.isArray(list) ? list : (list?.data || list?.services || list?.servicios || []);
+                            if (Array.isArray(items)) {
+                                const found = items.find(s => String(s.id) === String(id));
+                                if (found) return { success: true, data: found };
+                            }
+                        } catch {}
+                    }
+                    for (const v of EP_SERVICES_DETAIL_VARIANTS) {
+                        try {
+                            const r = await _apiRequest(`${v}/${id}`, { method: 'GET' });
+                            return { success: true, data: r.data || r.service || r };
+                        } catch (e2) {}
+                    }
+                    throw e1;
                 }
-
-                return {
-                    success: true,
-                    data: response.data
-                };
 
             } catch (error) {
                 console.error('❌ [SERVICES] Error en getServicioById:', error);
@@ -1030,12 +1298,20 @@ const ServiceManager = (function() {
          */
         renderCurrentImages: function(service) {
             let imagesHtml = '';
+            const apiHost = (window.API_BASE_URL || '').replace(/\/$/, '');
+            const resolveImg = (p) => {
+                if (!p) return '';
+                if (typeof p === 'string' && p.startsWith('http')) return p;
+                const rel = String(p).replace(/^\/+/, '');
+                const path = rel.startsWith('storage/') ? rel : `storage/${rel.replace(/^storage\//,'')}`;
+                return `${apiHost}/${path}`;
+            };
 
             // Imagen principal
             if (service.imagen_principal) {
                 imagesHtml += `
                     <div class="relative group">
-                        <img src="${service.imagen_principal.startsWith('http') ? service.imagen_principal : `/storage/${service.imagen_principal}`}"
+                        <img src="${resolveImg(service.imagen_principal)}"
                              alt="Imagen principal"
                              class="w-full h-20 object-cover rounded">
                         <div class="absolute inset-0 bg-black bg-opacity-50 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-center justify-center">
@@ -1050,7 +1326,7 @@ const ServiceManager = (function() {
                 service.galeria_imagenes.forEach((imagen, index) => {
                     imagesHtml += `
                         <div class="relative group">
-                            <img src="${imagen.startsWith('http') ? imagen : `/storage/${imagen}`}"
+                            <img src="${resolveImg(imagen)}"
                                  alt="Imagen ${index + 1}"
                                  class="w-full h-20 object-cover rounded">
                             <div class="absolute inset-0 bg-black bg-opacity-50 opacity-0 group-hover:opacity-100 transition-opacity rounded flex items-center justify-center">
@@ -1116,16 +1392,27 @@ const ServiceManager = (function() {
             const form = document.getElementById('edit-service-form');
             const submitButton = form.querySelector('button[type="submit"]');
             const originalButtonText = submitButton.innerHTML;
+            if (form.dataset.submitting === 'true') {
+                console.warn('⚠️ [SERVICES] Envío ignorado: ya hay una solicitud en curso');
+                return;
+            }
+            form.dataset.submitting = 'true';
 
             // Crear FormData
             const formData = new FormData();
 
             // Datos básicos
             formData.append('nombre_servicio', document.getElementById('edit-nombre-servicio').value);
-            formData.append('categoria', document.getElementById('edit-categoria').value);
+            const categoriaVal = document.getElementById('edit-categoria').value;
+            formData.append('categoria', categoriaVal);
             formData.append('descripcion', document.getElementById('edit-descripcion').value);
             formData.append('direccion', document.getElementById('edit-direccion').value);
             formData.append('telefono', document.getElementById('edit-telefono').value);
+
+            // Si la categoría parece un ID numérico, enviar también category_id para mayor compatibilidad
+            if (categoriaVal && /^\d+$/.test(String(categoriaVal))) {
+                formData.append('category_id', String(categoriaVal));
+            }
 
             // Datos opcionales
             const precioBase = document.getElementById('edit-precio-base').value;
@@ -1147,6 +1434,63 @@ const ServiceManager = (function() {
             // Método HTTP para Laravel (PUT/PATCH via POST)
             formData.append('_method', 'PUT');
 
+            // Algunos backends requieren el id en el cuerpo
+            if (!formData.has('id')) {
+                formData.append('id', String(id));
+            }
+
+            // Adjuntar entrepreneur_id y user_id para backend que lo exige
+            try {
+                if (!formData.has('entrepreneur_id')) {
+                    const mePath = window.API_EP_ME || `${(window.API_PREFIX || '/api/v1')}/entrepreneur/me`;
+                    const base = (window.API_BASE_URL || '').replace(/\/$/, '');
+                    const url = `${base}${mePath.startsWith('/') ? mePath : `/${mePath}`}`;
+                    const headers = { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+                    try { const token = window.API_TOKEN || localStorage.getItem('API_TOKEN'); if (token) headers['Authorization'] = `Bearer ${token}`; } catch {}
+                    const res = await fetch(url, { method: 'GET', headers, credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                    if (res.ok) {
+                        const data = await res.json().catch(() => ({}));
+                        const payload = data?.data || data?.user || data?.entrepreneur || data;
+                        const eid = payload?.id || payload?.entrepreneur_id || null;
+                        if (eid != null) {
+                            formData.append('entrepreneur_id', eid);
+                            if (!formData.has('emprendedor_id')) formData.append('emprendedor_id', eid);
+                            if (!formData.has('user_id')) formData.append('user_id', eid);
+                        }
+                    }
+                }
+            } catch {}
+
+            // Aumentar compatibilidad de nombres de campos antes de enviar
+            this._augmentServiceFormData(formData);
+            // Aplicar mapeo manual si el backend usa nombres distintos
+            const mapped = this._applyFieldMap(formData);
+
+            // Reducir a claves esperadas por backend (ES) para evitar rechazo por nombres desconocidos
+            // Permitir override por localStorage: SERVICE_UPDATE_ALLOWED_KEYS (JSON array)
+            let allowedList = [
+                // Español
+                'nombre_servicio','categoria','descripcion','direccion','telefono','precio_base','horario_atencion',
+                'imagen_principal','galeria_imagenes[]','_method','entrepreneur_id','emprendedor_id','user_id','id',
+                // Inglés / alias comunes
+                'name','category','category_id','description','address','phone','price','schedule','imagen','main_image','gallery_images[]','horario'
+            ];
+            try {
+                const override = localStorage.getItem('SERVICE_UPDATE_ALLOWED_KEYS');
+                if (override) {
+                    const arr = JSON.parse(override);
+                    if (Array.isArray(arr) && arr.length) allowedList = arr.concat(allowedList);
+                }
+            } catch {}
+            const allowedKeys = new Set(allowedList);
+            const fdSend = new FormData();
+            for (const [k, v] of mapped.entries()) {
+                if (allowedKeys.has(k)) {
+                    fdSend.append(k, v);
+                }
+            }
+            console.debug('🧾 [SERVICES] Payload update (depurado):', Array.from(fdSend.keys()));
+
             // Validar datos básicos
             const errors = this.validateServiceForm(formData);
             if (errors.length > 0) {
@@ -1160,25 +1504,218 @@ const ServiceManager = (function() {
             try {
                 console.log(`📤 [SERVICES] Actualizando servicio ${id}`);
 
-                const response = await _apiRequest(`/services/${id}`, {
-                    method: 'POST', // Laravel usa POST con _method=PUT
-                    body: formData
-                });
+                // Capturar valores esperados para verificación
+                const expected = {
+                    nombre_servicio: formData.get('nombre_servicio') || '',
+                    categoria: formData.get('categoria') || '',
+                    descripcion: formData.get('descripcion') || '',
+                    direccion: formData.get('direccion') || '',
+                    telefono: formData.get('telefono') || '',
+                    precio_base: formData.get('precio_base') || '',
+                    horario_atencion: formData.get('horario_atencion') || ''
+                };
 
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al actualizar el servicio');
+                let updated = false, lastErr = '';
+
+                // 0) Configurable override vía localStorage
+                try {
+                    const raw = localStorage.getItem('SERVICE_UPDATE_OVERRIDE');
+                    if (raw) {
+                        const cfg = JSON.parse(raw);
+                        const method = (cfg.method || 'POST').toUpperCase();
+                        const endpointTpl = cfg.endpoint || `${EP_SERVICES_FALLBACK}/${id}`;
+                        const endpoint = endpointTpl.replace(':id', String(id));
+                        const bodyType = cfg.bodyType || 'form'; // 'form' | 'json'
+                        let body, headers = {};
+                        if (bodyType === 'json' && !_hasFiles(fdSend)) {
+                            body = JSON.stringify(_formDataToObject(fdSend));
+                            headers['Content-Type'] = 'application/json';
+                        } else {
+                            body = fdSend;
+                        }
+                        const resp = await _apiRequest(endpoint, { method, body, headers });
+                        updated = (resp?.success === true) || !!(resp?.data || resp?.service);
+                        if (!updated && (resp && (resp.message || resp.error))) {
+                            lastErr = resp.message || resp.error;
+                        }
+                    }
+                } catch (e) {
+                    lastErr = e?.message || String(e);
+                }
+                
+                try {
+                    if (!updated) {
+                        const response = await _apiRequestWithFallback(`${EP_SERVICES}/${id}`, `${EP_SERVICES_FALLBACK}/${id}`, { method: 'POST', body: fdSend });
+                    console.debug('🧪 [SERVICES] Respuesta update primaria:', response);
+                    updated = (response?.success === true) || !!(response?.data || response?.service);
+                    }
+                } catch (e) { lastErr = e?.message || String(e); }
+                if (!updated) {
+                    for (const v of EP_SERVICES_DETAIL_VARIANTS) {
+                        try {
+                            const r = await _apiRequest(`${v}/${id}`, { method: 'POST', body: fdSend });
+                            console.debug('🧪 [SERVICES] Respuesta update variante', v, r);
+                            updated = (r?.success === true) || !!(r?.data || r?.service);
+                            if (updated) break;
+                        } catch (e) { lastErr = e?.message || String(e); }
+                    }
+                }
+                // Intentar PUT directo si aún no
+                if (!updated) {
+                    for (const v of EP_SERVICES_DETAIL_VARIANTS) {
+                        try {
+                            const r = await _apiRequest(`${v}/${id}`, { method: 'PUT', body: fdSend });
+                            console.debug('🧪 [SERVICES] Respuesta update PUT', v, r);
+                            updated = (r?.success === true) || !!(r?.data || r?.service);
+                            if (updated) break;
+                        } catch (e) { lastErr = e?.message || String(e); }
+                    }
+                }
+                // Intentar PATCH directo como última opción
+                if (!updated) {
+                    for (const v of EP_SERVICES_DETAIL_VARIANTS) {
+                        try {
+                            const r = await _apiRequest(`${v}/${id}`, { method: 'PATCH', body: fdSend });
+                            console.debug('🧪 [SERVICES] Respuesta update PATCH', v, r);
+                            updated = (r?.success === true) || !!(r?.data || r?.service);
+                            if (updated) break;
+                        } catch (e) { lastErr = e?.message || String(e); }
+                    }
+                }
+                if (!updated) throw new Error(lastErr || 'Error al actualizar el servicio');
+
+                // Verificación: volver a obtener el servicio y comparar campos
+                const base = (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1');
+                const variants = EP_SERVICES_DETAIL_VARIANTS;
+                let fetched = null;
+                for (const v of variants) {
+                    try {
+                        const cb = `_=${Date.now()}`;
+                        const url = `${base}${v}/${id}?${cb}`;
+                        const res = await fetch(url, { method: 'GET', headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest', ...(window.API_TOKEN ? { Authorization: `Bearer ${window.API_TOKEN}` } : {}) }, credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                        if (res.ok) { const j = await res.json().catch(() => ({})); fetched = j?.data || j?.service || j; break; }
+                    } catch {}
+                }
+                if (fetched) {
+                    const mismatches = [];
+                    // nombre
+                    const fName = fetched.nombre_servicio ?? fetched.nombre ?? fetched.name ?? '';
+                    if (expected.nombre_servicio && String(fName) !== String(expected.nombre_servicio)) mismatches.push('nombre');
+                    // categoria (string, id o objeto)
+                    let fCat = '';
+                    if (typeof fetched.categoria === 'object' && fetched.categoria) {
+                        fCat = fetched.categoria.slug || fetched.categoria.name || fetched.categoria.id || '';
+                    } else {
+                        fCat = fetched.categoria ?? fetched.category ?? fetched.category_id ?? '';
+                    }
+                    if (expected.categoria && String(fCat) !== String(expected.categoria)) mismatches.push('categoria');
+                    // descripcion
+                    const fDesc = fetched.descripcion ?? fetched.description ?? '';
+                    if (expected.descripcion && String(fDesc) !== String(expected.descripcion)) mismatches.push('descripcion');
+                    // direccion/address
+                    const fAddr = fetched.direccion ?? fetched.address ?? '';
+                    if (expected.direccion && String(fAddr) !== String(expected.direccion)) mismatches.push('direccion');
+                    // telefono/phone
+                    const fTel = fetched.telefono ?? fetched.phone ?? '';
+                    if (expected.telefono && String(fTel) !== String(expected.telefono)) mismatches.push('telefono');
+                    // precio_base/price/precio
+                    const fPrice = fetched.precio_base ?? fetched.price ?? fetched.precio ?? '';
+                    if (expected.precio_base && String(fPrice) !== String(expected.precio_base)) mismatches.push('precio_base');
+                    // horario
+                    const fSch = fetched.horario_atencion ?? fetched.horario ?? fetched.schedule ?? '';
+                    if (expected.horario_atencion && String(fSch) !== String(expected.horario_atencion)) mismatches.push('horario_atencion');
+
+                    if (mismatches.length > 0) {
+                        _showToast(`El servidor respondió ok, pero no reflejó cambios en: ${mismatches.join(', ')}.`, 'error');
+                        return; // No cerrar modal
+                    }
                 }
 
                 _showToast('Servicio actualizado correctamente', 'success');
-                closeModalCallback();
+
+                // Parchear la tarjeta en UI de forma optimista
+                try {
+                    const expectedUi = {
+                        nombre_servicio: expected.nombre_servicio,
+                        descripcion: expected.descripcion,
+                        precio_base: expected.precio_base,
+                        categoria: expected.categoria,
+                        horario_atencion: expected.horario_atencion,
+                        direccion: expected.direccion,
+                        telefono: expected.telefono
+                    };
+                    this._optimisticallyPatchServiceCard(id, expectedUi);
+                } catch {}
+
+                // Asegurar que este servicio quede asociado al emprendedor en la cache local
+                try {
+                    const eid = formData.get('entrepreneur_id') || localStorage.getItem('ENTREPRENEUR_ID');
+                    if (eid && id != null) {
+                        const key = `MY_SERVICE_IDS:${eid}`;
+                        let ids = [];
+                        try { ids = JSON.parse(localStorage.getItem(key) || '[]'); } catch {}
+                        ids = Array.isArray(ids) ? ids : [];
+                        if (!ids.some(x => String(x) === String(id))) {
+                            ids.push(id);
+                            localStorage.setItem(key, JSON.stringify(ids));
+                        }
+                    }
+                } catch {}
+
+                // Cerrar modal con mecanismos de respaldo
+                try { closeModalCallback && closeModalCallback(); } catch {}
+                const modalEl = document.getElementById('edit-service-modal');
+                if (modalEl && modalEl.isConnected) {
+                    try { document.body.removeChild(modalEl); } catch { modalEl.classList.add('hidden'); }
+                }
+
+                // Recargar listas
                 this.loadServicios();
+                // Refrescar 'Mis Servicios' si existe
+                if (window.loadMisServicios) {
+                    setTimeout(() => window.loadMisServicios(), 300);
+                }
 
             } catch (error) {
                 console.error('❌ [SERVICES] Error al actualizar servicio:', error);
                 _showToast(error.message || 'Error al actualizar el servicio', 'error');
             } finally {
                 _toggleButtonLoading(submitButton, false, originalButtonText);
+                form.dataset.submitting = 'false';
             }
+        },
+
+        /**
+         * Actualiza en sitio la tarjeta del servicio en "Mis Servicios" sin esperar recarga
+         */
+        _optimisticallyPatchServiceCard(id, data) {
+            try {
+                const btn = document.querySelector(`.editar-servicio[data-id="${id}"]`);
+                if (!btn) return;
+                const card = btn.closest('.product-card');
+                if (!card) return;
+                // Título
+                const title = card.querySelector('h3');
+                if (title && data.nombre_servicio) title.textContent = data.nombre_servicio;
+                // Descripción
+                const desc = card.querySelector('p.text-gray-600');
+                if (desc && data.descripcion) desc.textContent = data.descripcion;
+                // Precio
+                if (data.precio_base) {
+                    const priceEl = card.querySelector('span.text-2xl');
+                    if (priceEl) {
+                        const n = Number(data.precio_base);
+                        const txt = isNaN(n) ? String(data.precio_base) : `$${n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                        priceEl.textContent = txt;
+                    }
+                }
+                // Categoría
+                const badge = card.querySelector('.absolute.top-2.right-2');
+                if (badge && data.categoria) badge.textContent = String(data.categoria);
+                // Datos inferiores
+                const blocks = card.querySelectorAll('.flex.items-center span.truncate, .flex.items-center span:not(.truncate)');
+                // No siempre fiable, así que no tocamos si no es claro
+            } catch {}
         },
 
         /**
@@ -1192,8 +1729,12 @@ const ServiceManager = (function() {
                 return;
             }
 
-            // Evitar múltiples envíos
-            if (servicioForm.dataset.submitting === 'true') return;
+            // Evitar múltiples bindings del handler
+            if (servicioForm.dataset.serviceHandlerBound === 'true') {
+                console.debug('ℹ️ [SERVICES] Handler de submit ya está enlazado (ServicePublishing)');
+                return;
+            }
+            servicioForm.dataset.serviceHandlerBound = 'true';
 
             servicioForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
@@ -1377,19 +1918,22 @@ const ServiceManager = (function() {
          * Configura eventos globales
          */
         setupGlobalEvents: function() {
-            // Eventos para botones de edición y eliminación
+            // Eventos para botones de edición y eliminación (robustos con closest)
             document.addEventListener('click', (e) => {
-                if (e.target.classList.contains('editar-servicio')) {
+                const editBtn = e.target.closest('.editar-servicio');
+                if (editBtn) {
                     e.preventDefault();
-                    const serviceId = parseInt(e.target.dataset.serviceId);
+                    const serviceId = parseInt(editBtn.dataset.serviceId || editBtn.getAttribute('data-id'));
                     if (serviceId) {
                         this.editarServicio(serviceId);
+                        return;
                     }
                 }
 
-                if (e.target.classList.contains('eliminar-servicio')) {
+                const delBtn = e.target.closest('.eliminar-servicio');
+                if (delBtn) {
                     e.preventDefault();
-                    const serviceId = parseInt(e.target.dataset.serviceId);
+                    const serviceId = parseInt(delBtn.dataset.serviceId || delBtn.getAttribute('data-id'));
                     if (serviceId) {
                         this.eliminarServicio(serviceId);
                     }
@@ -1401,11 +1945,17 @@ const ServiceManager = (function() {
 
 // Inicialización cuando el DOM esté listo
 document.addEventListener('DOMContentLoaded', () => {
-    ServiceManager.init();
+    // Inicializar solo si hay elementos de servicios presentes en la página
+    const hasServicesUI = !!(document.getElementById('servicio-form') || document.getElementById('services-grid') || document.querySelector('#servicios') || document.querySelector('#servicios .grid'));
+    if (hasServicesUI) {
+        ServiceManager.init();
+    } else {
+        console.debug('ℹ️ [SERVICES] Inicialización omitida: no hay UI de servicios en esta página.');
+    }
 
     // Funciones globales para mantener compatibilidad
     window.ServicesManager = ServiceManager;
     window.editarServicio = (id) => ServiceManager.editarServicio(id);
     window.eliminarServicio = (id) => ServiceManager.eliminarServicio(id);
-    window.showGalleryModal = (serviceId, startIdx) => ServiceManager._showGalleryModal(serviceId, startIdx);
+    window.showGalleryModal = (serviceId, startIdx) => ServiceManager.showGalleryModal(serviceId, startIdx);
 });

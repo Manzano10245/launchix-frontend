@@ -29,3 +29,30 @@
         </div>
     </div>
 </div>
+
+<script>
+// Cargar productos automáticamente cuando la sección sea visible
+document.addEventListener('DOMContentLoaded', function() {
+    const section = document.getElementById('productos');
+    if (!section) return;
+
+    const tryLoad = () => {
+        if (section.offsetParent !== null && window.ProductManager && typeof window.ProductManager.loadProducts === 'function') {
+            console.log('🔵 [AUTO] Sección Mis Productos visible — cargando...');
+            window.ProductManager.loadProducts();
+            return true;
+        }
+        return false;
+    };
+
+    // Intento inmediato y fallback por observer
+    if (!tryLoad()) {
+        const observer = new MutationObserver(() => { if (tryLoad()) observer.disconnect(); });
+        observer.observe(section, { attributes: true, attributeFilter: ['class', 'style'] });
+        // intento tardío por si el script carga después
+        setTimeout(tryLoad, 700);
+    }
+});
+</script>
+
+@vite('resources/js/ProductPublishing.js')

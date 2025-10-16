@@ -7,7 +7,7 @@
 const ServicesApp = (function() {
     // Configuración privada
     const config = {
-        apiBaseUrl: '/api',
+        apiBaseUrl: (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1'),
         servicesPerPage: 12,
         maxImageSize: 2 * 1024 * 1024, // 2MB
         allowedImageTypes: ['image/jpeg', 'image/png', 'image/jpg'],
@@ -30,13 +30,34 @@ const ServicesApp = (function() {
     // ============================================
 
     /**
+     * Obtiene o crea el contenedor de la grilla de servicios.
+     * Prioriza #services-grid; hace fallback a #services-list; crea uno si no existe.
+     * @returns {HTMLElement} elemento contenedor
+     */
+    function _getServicesGridContainer() {
+        let grid = document.getElementById('services-grid') || document.getElementById('services-list');
+        if (!grid) {
+            // Crear contenedor si no existe
+            grid = document.createElement('div');
+            grid.id = 'services-grid';
+            grid.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8';
+
+            // Insertar dentro de un contenedor conocido si existe
+            const mainContainer = document.querySelector('.container.mx-auto') || document.querySelector('main') || document.body;
+            mainContainer.appendChild(grid);
+            console.log('🧩 [SERVICES] Contenedor de servicios creado dinámicamente (#services-grid)');
+        }
+        return grid;
+    }
+
+    /**
      * Obtiene el token CSRF
      * @returns {string} Token CSRF
      */
     function _getCsrfToken() {
         const token = document.querySelector('meta[name="csrf-token"]');
         if (!token) {
-            console.error('❌ [CSRF] Token CSRF no encontrado');
+            // En frontend desacoplado, preferimos Sanctum cookie si está habilitado
             return '';
         }
         return token.content;
@@ -184,21 +205,52 @@ const ServicesApp = (function() {
      * @returns {Promise} Promesa con la respuesta
      */
     async function _apiRequest(endpoint, options = {}) {
-        const defaultOptions = {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-CSRF-TOKEN': _getCsrfToken()
-            }
+        const method = (options.method || 'GET').toUpperCase();
+        const headers = {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            ...(options.headers || {})
         };
 
-        const mergedOptions = { ...defaultOptions, ...options };
+        const csrfToken = _getCsrfToken();
+        if (csrfToken) headers['X-CSRF-TOKEN'] = csrfToken;
+
+        // Token Bearer opcional
+        if (window.API_AUTH_STRATEGY === 'token' && window.API_TOKEN) {
+            headers['Authorization'] = `Bearer ${window.API_TOKEN}`;
+        }
+
+        const base = (config.apiBaseUrl || '/api').replace(/\/$/, '');
+        let fullUrl = endpoint.startsWith('http') ? endpoint : `${base}${endpoint}`;
+
+        // Cache-busting para GET y evitar datos obsoletos
+        if (method === 'GET') {
+            const sep = fullUrl.includes('?') ? '&' : '?';
+            fullUrl = `${fullUrl}${sep}_=${Date.now()}`;
+        }
+
+        const mergedOptions = {
+            method,
+            headers,
+            credentials: window.API_WITH_CREDENTIALS ? 'include' : (options.credentials || 'same-origin'),
+            ...options
+        };
 
         try {
-            console.log(`📡 [API] ${mergedOptions.method} ${endpoint}`);
+            console.log(`📡 [API] ${mergedOptions.method} ${fullUrl}`);
 
-            const response = await fetch(`${config.apiBaseUrl}${endpoint}`, mergedOptions);
+            // Si usamos Sanctum y método no-GET, asegurar cookie CSRF
+            if (window.API_WITH_CREDENTIALS && window.API_AUTH_STRATEGY === 'sanctum' && method !== 'GET') {
+                try {
+                    await fetch(`${(window.API_BASE_URL || '').replace(/\/$/, '')}/sanctum/csrf-cookie`, {
+                        credentials: 'include'
+                    });
+                } catch (e) {
+                    console.warn('⚠️ No se pudo obtener CSRF cookie de Sanctum:', e);
+                }
+            }
+
+            const response = await fetch(fullUrl, mergedOptions);
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
@@ -357,7 +409,7 @@ const ServicesApp = (function() {
 
         const stars = _generateStarRating(service.rating || 4.5);
 
-        let imgSrc = 'https://via.placeholder.com/300x300/F77786/FFFFFF?text=Servicio';
+        let imgSrc = '/images/ejemplo-servicios/hogar.jpg';
         if (service.imagen_principal) {
             if (service.imagen_principal.startsWith('images/')) {
                 imgSrc = '/' + service.imagen_principal;
@@ -372,8 +424,8 @@ const ServicesApp = (function() {
 
         card.innerHTML = `
             <div class="relative">
-                <img src="${imgSrc}" alt="${service.nombre_servicio}" class="w-full h-64 object-cover"
-                     onerror="this.src='https://via.placeholder.com/300x300/F77786/FFFFFF?text=Servicio'">
+             <img src="${imgSrc}" alt="${service.nombre_servicio}" class="w-full h-64 object-cover"
+                 onerror="this.onerror=null;this.src='/images/ejemplo-servicios/hogar.jpg'">
                 ${newBadge}
                 <div class="absolute inset-0 bg-black bg-opacity-0 hover:bg-opacity-10 transition-all duration-300 flex items-center justify-center opacity-0 hover:opacity-100">
                     <button class="bg-white text-gray-800 px-4 py-2 rounded-lg font-semibold shadow-lg transform hover:scale-105 transition-all duration-300 view-service-details-btn"
@@ -484,7 +536,7 @@ const ServicesApp = (function() {
      * Muestra loading mientras carga servicios
      */
     function _showServicesLoading() {
-        const grid = document.getElementById('services-grid');
+        const grid = _getServicesGridContainer();
         if (grid) {
             grid.innerHTML = `
                 <div class="col-span-full flex items-center justify-center py-12">
@@ -502,7 +554,7 @@ const ServicesApp = (function() {
      * @param {string} message - Mensaje de error
      */
     function _showServicesError(message) {
-        const grid = document.getElementById('services-grid');
+        const grid = _getServicesGridContainer();
         if (grid) {
             grid.innerHTML = `
                 <div class="col-span-full text-center py-12">
@@ -840,7 +892,7 @@ const ServicesApp = (function() {
                 let backendServices = [];
 
                 try {
-                    const response = await _apiRequest('/services');
+                    const response = await _apiRequest('/servicios');
 
                     if (response.success && Array.isArray(response.data)) {
                         backendServices = response.data.map(service => ({
@@ -873,7 +925,7 @@ const ServicesApp = (function() {
          * Muestra servicios en la vista
          */
         displayServices: function() {
-            const grid = document.getElementById('services-grid');
+            const grid = _getServicesGridContainer();
 
             if (!grid) {
                 console.warn('⚠️ [SERVICES] Contenedor de servicios no encontrado');
@@ -897,8 +949,12 @@ const ServicesApp = (function() {
                 return;
             }
 
-            // Mostrar servicios
-            grid.innerHTML = servicesToShow.map(service => _createServiceCard(service)).join('');
+            // Mostrar servicios (limpiar y anexar elementos)
+            grid.innerHTML = '';
+            servicesToShow.forEach(service => {
+                const el = _createServiceCard(service);
+                grid.appendChild(el);
+            });
 
             // Actualizar paginación
             _updateServicesPagination();
@@ -924,7 +980,7 @@ const ServicesApp = (function() {
             this.displayServices();
 
             // Scroll hacia arriba
-            const grid = document.getElementById('services-grid');
+            const grid = _getServicesGridContainer();
             if (grid) {
                 grid.scrollIntoView({ behavior: 'smooth' });
             }
@@ -1073,19 +1129,31 @@ const ServicesApp = (function() {
             // Para servicios reales (no estáticos), obtener datos actualizados del servidor
             if (service && serviceId < 99000) {
                 try {
-                    const response = await _apiRequest(`/services/details/${serviceId}`);
+                    // Intentar detalle directo en /servicios/{id}
+                    const response = await _apiRequest(`/servicios/${serviceId}`);
 
-                    if (response.success) {
-                        service = response.data;
+                    if (response && (response.success || response.id)) {
+                        // Algunos backends devuelven {success,data} y otros el objeto directo
+                        service = response.data || response;
+                    } else {
+                        throw new Error('Respuesta detalle no válida');
                     }
                 } catch (error) {
-                    console.log('⚠️ [SERVICES] Error al obtener detalles actualizados:', error);
+                    console.log('⚠️ [SERVICES] No se pudo obtener detalle directo, intentando lista y seleccionando por ID:', error?.message || error);
+                    try {
+                        const listResp = await _apiRequest('/servicios');
+                        const items = Array.isArray(listResp?.data) ? listResp.data : (Array.isArray(listResp) ? listResp : []);
+                        const found = items.find(it => Number(it.id) === Number(serviceId));
+                        if (found) service = found;
+                    } catch (e2) {
+                        console.log('⚠️ [SERVICES] Fallback por lista también falló:', e2?.message || e2);
+                    }
                 }
             }
 
             if (!service) return;
 
-            let imgSrc = 'https://via.placeholder.com/300x300/F77786/FFFFFF?text=Servicio';
+            let imgSrc = '/images/ejemplo-servicios/hogar.jpg';
             if (service.imagen_principal) {
                 if (service.imagen_principal.startsWith('images/')) {
                     imgSrc = '/' + service.imagen_principal;
@@ -1348,7 +1416,7 @@ const ServicesApp = (function() {
                     formData.append('_token', csrfToken.getAttribute('content'));
                 }
 
-                const response = await _apiRequest('/services', {
+                const response = await _apiRequest('/servicios', {
                     method: 'POST',
                     body: formData
                 });

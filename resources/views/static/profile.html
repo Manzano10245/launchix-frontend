@@ -1,0 +1,338 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Dashboard de Perfil</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="../../css/Navbar.css">
+  <style>
+    .active-tab { border-color: #ef4444; color: #ef4444; }
+  </style>
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <meta name="csrf-token" content="" />
+  <script>
+    // simple guard
+    (function(){
+      try {
+        const token = localStorage.getItem('API_TOKEN');
+        if (!token) {
+          window.location.href = '/resources/views/static/login.html';
+        }
+      } catch {}
+    })();
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: { colors: { primary: '#ef4444' } } } }
+  </script>
+  <link rel="icon" href="/favicon.ico" />
+</head>
+<body class="bg-gray-50">
+  <div id="navbar"></div>
+  <main class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+      <i class="fas fa-user-circle text-primary"></i> Mi Panel
+    </h1>
+
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+      <!-- Sidebar -->
+      <aside class="bg-white rounded-xl shadow p-4 h-max">
+        <div id="userSummary" class="flex items-center gap-3 mb-4">
+          <div class="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center text-gray-500"><i class="fas fa-user"></i></div>
+          <div>
+            <div id="summaryName" class="font-semibold">Usuario</div>
+            <div id="summaryEmail" class="text-xs text-gray-500">-</div>
+            <div id="summaryRole" class="text-xs text-primary mt-1">-</div>
+          </div>
+        </div>
+        <nav id="profileNav" class="space-y-1">
+          <button data-section="profile" class="w-full text-left px-3 py-2 rounded border border-transparent hover:bg-gray-50 flex items-center gap-2">
+            <i class="fas fa-id-card"></i> Mi Perfil
+          </button>
+          <button data-section="publish-product" class="role-ent w-full text-left px-3 py-2 rounded border border-transparent hover:bg-gray-50 flex items-center gap-2">
+            <i class="fas fa-box-open"></i> Publicar Producto
+          </button>
+          <button data-section="my-products" class="role-ent w-full text-left px-3 py-2 rounded border border-transparent hover:bg-gray-50 flex items-center gap-2">
+            <i class="fas fa-boxes"></i> Mis Productos
+          </button>
+          <button data-section="publish-service" class="role-ent w-full text-left px-3 py-2 rounded border border-transparent hover:bg-gray-50 flex items-center gap-2">
+            <i class="fas fa-concierge-bell"></i> Publicar Servicio
+          </button>
+          <button data-section="my-services" class="role-ent w-full text-left px-3 py-2 rounded border border-transparent hover:bg-gray-50 flex items-center gap-2">
+            <i class="fas fa-list"></i> Mis Servicios
+          </button>
+          <button data-section="settings" class="w-full text-left px-3 py-2 rounded border border-transparent hover:bg-gray-50 flex items-center gap-2">
+            <i class="fas fa-cog"></i> Configuración
+          </button>
+        </nav>
+      </aside>
+
+      <!-- Content -->
+      <section class="lg:col-span-3 space-y-6">
+        <div id="section-profile" class="bg-white rounded-xl shadow p-5 hidden"></div>
+        <div id="section-publish-product" class="bg-white rounded-xl shadow p-5 hidden">
+          <h2 class="text-xl font-semibold mb-4">Publicar Producto</h2>
+          <div id="productFormContainer">
+            <!-- Inserto el formulario real esperado por ProductPublishing.js -->
+            <div id="publicar-producto">
+              <form id="producto-form" class="space-y-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Nombre del Producto *</label>
+                    <input type="text" name="name" class="form-input w-full px-3 py-2 border border-gray-300 rounded-lg" required>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Categoría *</label>
+                    <select name="category" class="form-input w-full px-3 py-2 border border-gray-300 rounded-lg" required>
+                      <option value="">Seleccionar categoría</option>
+                      <option value="ropa">Ropa</option>
+                      <option value="calzado">Calzado</option>
+                      <option value="accesorios">Accesorios</option>
+                      <option value="hogar">Hogar</option>
+                      <option value="electronica">Electrónica</option>
+                      <option value="deportes">Deportes</option>
+                      <option value="belleza">Belleza y Cuidado Personal</option>
+                      <option value="juguetes">Juguetes</option>
+                      <option value="libros">Libros</option>
+                      <option value="otros">Otros</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Descripción del Producto *</label>
+                  <textarea name="description" class="form-input w-full px-3 py-2 border border-gray-300 rounded-lg" rows="4" required></textarea>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Precio *</label>
+                    <input type="number" name="price" class="form-input w-full px-3 py-2 border border-gray-300 rounded-lg" placeholder="0.00" min="0" step="0.01" required>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Cantidad en Stock *</label>
+                    <input type="number" name="stock" class="form-input w-full px-3 py-2 border border-gray-300 rounded-lg" min="0" required>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Imagen Principal del Producto</label>
+                  <div class="drag-area border-2 border-dashed rounded-lg p-4 text-center cursor-pointer" id="product-main-dropzone">
+                    <p class="text-gray-600 mb-2">Arrastra la imagen principal aquí o haz clic para seleccionar</p>
+                    <input type="file" name="main_image" id="product-main-image" class="hidden" accept="image/*">
+                    <button type="button" class="text-primary" onclick="document.getElementById('product-main-image').click()">Seleccionar Imagen</button>
+                  </div>
+                  <div id="product-main-preview" class="mt-4 grid grid-cols-1 gap-4 max-w-xs"></div>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Galería de Imágenes (Opcional)</label>
+                  <div class="drag-area border-2 border-dashed rounded-lg p-4 text-center cursor-pointer" id="product-gallery-dropzone">
+                    <p class="text-gray-600 mb-2">Arrastra más imágenes aquí o haz clic para seleccionar</p>
+                    <input type="file" name="gallery_images[]" id="product-gallery-images" class="hidden" multiple accept="image/*">
+                    <button type="button" class="text-primary" onclick="document.getElementById('product-gallery-images').click()">Seleccionar Imágenes</button>
+                  </div>
+                  <div id="product-gallery-preview" class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4"></div>
+                </div>
+                <div class="flex justify-end gap-3">
+                  <button type="button" class="px-6 py-2 border rounded-lg" onclick="window.showSection && window.showSection('productos')">Cancelar</button>
+                  <button id="submit-button" type="submit" class="px-6 py-2 rounded-lg text-white bg-primary hover:bg-red-600">Publicar Producto</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+        <div id="section-my-products" class="bg-white rounded-xl shadow p-5 hidden">
+          <h2 class="text-xl font-semibold mb-4">Mis Productos</h2>
+          <div id="productos">
+            <div id="productos-loading" class="text-sm text-gray-500 hidden">Cargando productos...</div>
+            <div id="contenedor-productos" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+          </div>
+        </div>
+        <div id="section-publish-service" class="bg-white rounded-xl shadow p-5 hidden">
+          <h2 class="text-xl font-semibold mb-4">Publicar Servicio</h2>
+          <div id="serviceFormContainer">
+            <div id="publicar-servicio">
+              <form id="servicio-form" class="space-y-6" enctype="multipart/form-data">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Nombre del Servicio *</label>
+                    <input type="text" name="nombre_servicio" class="form-input w-full px-3 py-2 border rounded-lg" required>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Categoría *</label>
+                    <select name="categoria" class="form-input w-full px-3 py-2 border rounded-lg" required>
+                      <option value="">Seleccionar categoría</option>
+                      <option value="tecnologia">Tecnología</option>
+                      <option value="hogar">Hogar y Jardinería</option>
+                      <option value="automotriz">Automotriz</option>
+                      <option value="belleza">Belleza y Cuidado Personal</option>
+                      <option value="educacion">Educación y Tutorías</option>
+                      <option value="salud">Salud y Bienestar</option>
+                      <option value="eventos">Eventos y Entretenimiento</option>
+                      <option value="construccion">Construcción y Reformas</option>
+                      <option value="transporte">Transporte y Logística</option>
+                      <option value="profesionales">Servicios Profesionales</option>
+                      <option value="otros">Otros</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Descripción del Servicio *</label>
+                  <textarea name="descripcion" class="form-input w-full px-3 py-2 border rounded-lg" rows="4" required></textarea>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Dirección *</label>
+                    <input type="text" name="direccion" class="form-input w-full px-3 py-2 border rounded-lg" required>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Teléfono *</label>
+                    <input type="tel" name="telefono" class="form-input w-full px-3 py-2 border rounded-lg" required>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Precio Base</label>
+                    <input type="number" name="precio_base" class="form-input w-full px-3 py-2 border rounded-lg" placeholder="0" min="0" step="1000">
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Horario de Atención</label>
+                    <input type="text" name="horario_atencion" class="form-input w-full px-3 py-2 border rounded-lg" placeholder="Lun-Vie 8:00-18:00">
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Imagen Principal</label>
+                  <div class="drag-area border-2 border-dashed rounded-lg p-4 text-center cursor-pointer" id="service-main-dropzone">
+                    <p class="text-gray-600 mb-2">Arrastra la imagen principal aquí o haz clic para seleccionar</p>
+                    <input type="file" name="imagen_principal" id="service-main-image" class="hidden" accept="image/*">
+                    <button type="button" class="text-primary" onclick="document.getElementById('service-main-image').click()">Seleccionar Imagen</button>
+                  </div>
+                  <div id="service-main-preview" class="mt-4"></div>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">Galería (Opcional)</label>
+                  <div class="drag-area border-2 border-dashed rounded-lg p-4 text-center cursor-pointer" id="service-gallery-dropzone">
+                    <p class="text-gray-600 mb-2">Arrastra más imágenes aquí o haz clic para seleccionar</p>
+                    <input type="file" name="galeria_imagenes[]" id="service-gallery-images" class="hidden" multiple accept="image/*">
+                    <button type="button" class="text-primary" onclick="document.getElementById('service-gallery-images').click()">Seleccionar Imágenes</button>
+                  </div>
+                  <div id="service-gallery-preview" class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4"></div>
+                </div>
+                <div class="flex justify-end gap-3">
+                  <button type="button" class="px-6 py-2 border rounded-lg" onclick="window.showSection && window.showSection('servicios')">Cancelar</button>
+                  <button type="submit" class="px-6 py-2 rounded-lg text-white bg-primary hover:bg-red-600">Publicar Servicio</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+        <div id="section-my-services" class="bg-white rounded-xl shadow p-5 hidden">
+          <h2 class="text-xl font-semibold mb-4">Mis Servicios</h2>
+          <div id="mis-servicios-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+          <div id="servicios-loading" class="hidden text-center text-gray-500 mt-4">Cargando...</div>
+          <div class="mt-2 text-sm text-gray-500">Total: <span id="servicios-count">0</span></div>
+        </div>
+        <div id="section-settings" class="bg-white rounded-xl shadow p-5 hidden">
+          <h2 class="text-xl font-semibold mb-4">Configuración</h2>
+          <p class="text-gray-600 text-sm">Próximamente.</p>
+        </div>
+      </section>
+    </div>
+  </main>
+  <div id="footer"></div>
+
+  <script type="module">
+    import '../../js/config.js';
+    import { renderNavbar } from '../../js/components/navbar.js';
+    import { renderFooter } from '../../js/components/footer.js';
+    import '../../js/auth-modal.js';
+
+    // Secciones existentes
+    import '../../js/profile.js';
+    import '../../js/entrepreneurProfile.js';
+    import '../../js/MisServicios.js';
+    import '../../js/ProductPublishing.js';
+    import '../../js/ServicePublishing.js';
+
+    renderNavbar('navbar');
+    renderFooter('footer');
+
+    // Helpers
+    const $ = (s)=>document.querySelector(s);
+    function setActive(section) {
+      document.querySelectorAll('[id^="section-"]').forEach(el=>el.classList.add('hidden'));
+      const target = document.getElementById('section-'+section);
+      if (target) target.classList.remove('hidden');
+      document.querySelectorAll('#profileNav button').forEach(b=>b.classList.remove('active-tab'));
+      const btn = document.querySelector(`#profileNav button[data-section="${section}"]`);
+      if (btn) btn.classList.add('active-tab');
+    }
+
+    // Role-aware nav
+    const role = localStorage.getItem('AUTH_ROLE') || 'user';
+    document.querySelectorAll('.role-ent').forEach(el=>{
+      if (role !== 'entrepreneur') el.classList.add('hidden');
+    });
+    $('#summaryRole').textContent = role === 'entrepreneur' ? 'Emprendedor' : 'Usuario';
+
+    // Cargar resumen simple usando profile.js (_loadUserData ya pinta #profile-section; aquí sólo el resumen)
+    // Intento de obtener nombre/email mínimo desde localStorage si ya existiera
+    try {
+      const name = localStorage.getItem('USER_NAME') || '';
+      const email = localStorage.getItem('USER_EMAIL') || '';
+      if (name) $('#summaryName').textContent = name;
+      if (email) $('#summaryEmail').textContent = email;
+    } catch {}
+
+    // Navegación
+    document.querySelectorAll('#profileNav button').forEach(btn=>{
+      btn.addEventListener('click', (e)=>{
+        const sec = btn.getAttribute('data-section');
+        setActive(sec);
+        if (sec === 'profile') {
+          // Montar perfil según rol: para ahora, reusar profile.js que pinta #profile-section simple
+          const container = document.getElementById('section-profile');
+          if (container && !container.dataset.mounted) {
+            container.dataset.mounted = '1';
+            container.innerHTML = '<div id="profile-section" class="max-w-2xl"></div>';
+            // profile.js ya corre por import y llenará #profile-section
+          }
+        } else if (sec === 'publish-product' && role === 'entrepreneur') {
+          // Inicializar zonas de imagen y form handlers del ProductManager
+          if (window.ProductManager && typeof window.ProductManager.setupImageUpload === 'function') {
+            ProductManager.setupImageUpload('product-main-dropzone','product-main-image','product-main-preview');
+            ProductManager.setupImageUpload('product-gallery-dropzone','product-gallery-images','product-gallery-preview');
+          }
+          if (window.ProductManager && typeof window.ProductManager.setupFormHandler === 'function') {
+            ProductManager.setupFormHandler();
+          }
+        } else if (sec === 'publish-service' && role === 'entrepreneur') {
+          // Inicializar zonas de imagen y form handlers del ServiceManager
+          if (window.ServicesManager && typeof window.ServicesManager.setupImageUpload === 'function') {
+            ServicesManager.setupImageUpload('service-main-dropzone','service-main-image','service-main-preview');
+            ServicesManager.setupImageUpload('service-gallery-dropzone','service-gallery-images','service-gallery-preview');
+          }
+          if (window.ServicesManager && typeof window.ServicesManager.setupFormHandler === 'function') {
+            ServicesManager.setupFormHandler();
+          }
+        } else if (sec === 'my-services' && role === 'entrepreneur') {
+          // Cargar lista de servicios
+          if (typeof window.loadMisServicios === 'function') {
+            window.loadMisServicios();
+          }
+        } else if (sec === 'my-products' && role === 'entrepreneur') {
+          // Cargar lista de productos del emprendedor
+          if (window.ProductManager && typeof window.ProductManager.loadProducts === 'function') {
+            window.ProductManager.loadProducts();
+          }
+        }
+      });
+    });
+
+    // Activar por defecto
+    setActive('profile');
+  </script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import './config.js';
 /**
  * Profile.js - Gestión del perfil de usuario con integración API
  * Versión mejorada con validación robusta, manejo de errores y notificaciones avanzadas
@@ -7,7 +8,7 @@
 const UserProfile = (function() {
     // Configuración privada
     const config = {
-        apiBaseUrl: '/api',
+        apiBaseUrl: (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1'),
         minPasswordLength: 8,
         maxUsernameLength: 30,
         maxNameLength: 100,
@@ -31,10 +32,7 @@ const UserProfile = (function() {
      */
     function _getCsrfToken() {
         const token = document.querySelector('meta[name="csrf-token"]');
-        if (!token) {
-            console.error('❌ [CSRF] Token CSRF no encontrado');
-            return '';
-        }
+        if (!token) return '';
         return token.content;
     }
 
@@ -106,21 +104,35 @@ const UserProfile = (function() {
      * @returns {Promise} Promesa con la respuesta
      */
     async function _apiRequest(endpoint, options = {}) {
-        const defaultOptions = {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-CSRF-TOKEN': _getCsrfToken()
-            }
+        const method = (options.method || 'GET').toUpperCase();
+        const headers = {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            ...(options.headers || {})
+        };
+        const csrfToken = _getCsrfToken();
+        if (csrfToken) headers['X-CSRF-TOKEN'] = csrfToken;
+        if (window.API_AUTH_STRATEGY === 'token' && window.API_TOKEN) {
+            headers['Authorization'] = `Bearer ${window.API_TOKEN}`;
+        }
+
+        const base = (config.apiBaseUrl || '/api/v1').replace(/\/$/, '');
+        const fullUrl = endpoint.startsWith('http') ? endpoint : `${base}${endpoint}`;
+
+        const mergedOptions = {
+            method,
+            headers,
+            credentials: window.API_WITH_CREDENTIALS ? 'include' : (options.credentials || 'same-origin'),
+            ...options
         };
 
-        const mergedOptions = { ...defaultOptions, ...options };
-
         try {
-            console.log(`📡 [API] ${mergedOptions.method} ${endpoint}`);
+            console.log(`📡 [API] ${mergedOptions.method} ${fullUrl}`);
+            if (window.API_WITH_CREDENTIALS && window.API_AUTH_STRATEGY === 'sanctum' && method !== 'GET') {
+                try { await fetch(`${(window.API_BASE_URL || '').replace(/\/$/, '')}/sanctum/csrf-cookie`, { credentials: 'include' }); } catch {}
+            }
 
-            const response = await fetch(`${config.apiBaseUrl}${endpoint}`, mergedOptions);
+            const response = await fetch(fullUrl, mergedOptions);
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
@@ -249,22 +261,114 @@ const UserProfile = (function() {
         try {
             console.log('🔄 [PROFILE] Cargando datos del usuario');
 
-            const response = await _apiRequest('/user/profile');
+            const role = (localStorage.getItem('AUTH_ROLE') || 'user');
+            const endpoint = role === 'entrepreneur' ? '/entrepreneur/me' : '/me';
+            const rawResponse = await _apiRequest(endpoint);
+            const normalized = _normalizeUserShape(rawResponse);
+            currentUser = normalized;
 
-            if (!response.success) {
-                throw new Error(response.message || 'Error al cargar los datos del perfil');
+            console.log('✅ [PROFILE] Usuario normalizado:', normalized);
+
+            const simple = document.getElementById('profile-section');
+            if (simple && currentUser) {
+                simple.innerHTML = `
+                    <div class="space-y-2">
+                        <div><span class="font-semibold">Nombre:</span> ${currentUser.name || ''}</div>
+                        <div><span class="font-semibold">Email:</span> ${currentUser.email || ''}</div>
+                        <div class="text-sm text-gray-500">ID: ${currentUser.id || ''}</div>
+                    </div>
+                `;
             }
 
-            currentUser = response.user;
-            console.log('✅ [PROFILE] Datos del usuario cargados');
-
-            // Rellenar formulario con los datos del usuario
             _populateForm(currentUser);
 
         } catch (error) {
             console.error('❌ [PROFILE] Error al cargar datos del usuario:', error);
-            _showNotification(error.message || 'Error al cargar los datos del perfil', 'error');
+            const simple = document.getElementById('profile-section');
+            let msg = error.message || 'Error al cargar perfil';
+            if (/unauthenticated|401/i.test(msg)) {
+                msg = 'No autenticado. Inicia sesión.';
+            } else if (/SQLSTATE|500|Base table or view not found/i.test(msg)) {
+                msg = 'Error interno del servidor (revisa relaciones/migraciones).';
+            }
+            if (simple) simple.innerHTML = `<div class="text-red-600">${msg}</div>`;
+            _showNotification(msg, 'error');
         }
+    }
+
+    /**
+     * Normaliza múltiples posibles formas de respuesta de /me
+     * @param {any} resp
+     * @returns {Object|null}
+     */
+    function _normalizeUserShape(resp) {
+        if (!resp) return null;
+        let user = resp;
+        // Extraer capas comunes
+        if (resp.data) {
+            if (Array.isArray(resp.data)) user = resp.data[0];
+            else if (resp.data.user) user = resp.data.user;
+            else if (resp.data.data) user = resp.data.data; // otra variante
+            else user = resp.data;
+        }
+        if (user && user.user) user = user.user; // anidación redundante
+        if (!user || typeof user !== 'object') return null;
+
+        // Resolver nombre completo
+        const firstName = user.first_name || user.firstname || '';
+        const lastName = user.last_name || user.lastname || '';
+        const fullNameCandidates = [user.name, `${firstName} ${lastName}`.trim(), user.username, user.email];
+        const name = fullNameCandidates.find(v => v && v.length > 0) || '';
+
+        // Resolver avatar
+        const rawAvatar = user.avatar || user.profile_image || user.photo || user.image || '';
+        const avatar = _resolveImage(rawAvatar);
+
+        // Emprendedor/negocio
+        const ent = user.entrepreneur || user.emprendedor || user.business || null;
+        let entrepreneur = null;
+        if (ent && typeof ent === 'object') {
+            const entAvatar = _resolveImage(ent.avatar || ent.logo || '');
+            entrepreneur = {
+                id: ent.id,
+                business_name: ent.business_name || ent.nombre || ent.name || name,
+                category: ent.category || ent.categoria || '',
+                address: ent.address || ent.direccion || '',
+                phone: ent.phone || ent.telefono || '',
+                description: ent.description || ent.descripcion || '',
+                avatar: entAvatar
+            };
+        }
+
+        return {
+            id: user.id || user.user_id || null,
+            name,
+            first_name: firstName || (name.split(' ')[0] || ''),
+            last_name: lastName || (name.includes(' ') ? name.split(' ').slice(1).join(' ') : ''),
+            email: user.email || user.mail || '',
+            username: user.username || user.nick || user.handle || '',
+            phone: user.phone || user.telefono || '',
+            bio: user.bio || user.about || user.descripcion || '',
+            avatar,
+            entrepreneur
+        };
+    }
+
+    /**
+     * Resuelve URL de imagen (avatar) tolerando rutas relativas/absolutas
+     * @param {string} raw
+     * @returns {string}
+     */
+    function _resolveImage(raw) {
+        if (!raw) return 'https://via.placeholder.com/160x160/F77786/FFFFFF?text=Usuario';
+        if (/^data:/.test(raw)) return raw;
+        if (/^https?:\/\//i.test(raw)) return raw;
+        // Limpiar prefijos
+        let path = raw.replace(/^storage\//, '').replace(/^\/+/,'');
+        const base = (window.API_BASE_URL || '').replace(/\/$/, '');
+        // Si ya incluye storage en la raíz
+        if (/storage\//.test(raw)) return `${base}/${raw.replace(/^\//,'')}`;
+        return `${base}/storage/${path}`;
     }
 
     /**
@@ -273,35 +377,29 @@ const UserProfile = (function() {
      */
     function _populateForm(user) {
         if (!user) return;
-
         const form = document.getElementById('profileForm');
         if (!form) return;
 
-        // Datos personales
-        document.getElementById('firstName')?.(value = user.first_name || '');
-        document.getElementById('lastName')?.(value = user.last_name || '');
-        document.getElementById('email')?.(value = user.email || '');
-        document.getElementById('phone')?.(value = user.phone || '');
-        document.getElementById('username')?.(value = user.username || '');
-        document.getElementById('bio')?.(value = user.bio || '');
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
 
-        // Datos de negocio (si es emprendedor)
+        setVal('firstName', user.first_name);
+        setVal('lastName', user.last_name);
+        setVal('email', user.email);
+        setVal('phone', user.phone);
+        setVal('username', user.username);
+        setVal('bio', user.bio);
+
         if (user.entrepreneur) {
-            document.getElementById('businessName')?.(value = user.entrepreneur.business_name || '');
-            document.getElementById('businessDescription')?.(value = user.entrepreneur.description || '');
-            document.getElementById('businessCategory')?.(value = user.entrepreneur.category || '');
-            document.getElementById('businessAddress')?.(value = user.entrepreneur.address || '');
-            document.getElementById('businessPhone')?.(value = user.entrepreneur.phone || '');
+            setVal('businessName', user.entrepreneur.business_name);
+            setVal('businessDescription', user.entrepreneur.description);
+            setVal('businessCategory', user.entrepreneur.category);
+            setVal('businessAddress', user.entrepreneur.address);
+            setVal('businessPhone', user.entrepreneur.phone);
         }
 
-        // Avatar
         if (user.avatar) {
             const avatarPreview = document.getElementById('avatarPreview');
-            if (avatarPreview) {
-                avatarPreview.src = user.avatar.startsWith('http') ?
-                    user.avatar :
-                    `/storage/${user.avatar}`;
-            }
+            if (avatarPreview) avatarPreview.src = user.avatar;
         }
     }
 
@@ -464,8 +562,10 @@ const UserProfile = (function() {
                 // Configurar validación en tiempo real
                 _setupRealTimeValidation();
 
-                // Configurar manejador del formulario
-                this.setupFormHandler();
+                // Configurar manejador del formulario solo si existe el formulario
+                if (document.getElementById('profileForm')) {
+                    this.setupFormHandler();
+                }
 
                 console.log('✅ [PROFILE] Módulo de perfil inicializado correctamente');
 

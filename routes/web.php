@@ -1,87 +1,60 @@
+
+
 <?php
 
-use App\Http\Controllers\Auth\EntrepreneurAuthController;
-use App\Http\Controllers\Auth\UserAuthController;
-use App\Http\Controllers\EntrepreneurProfileController;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\HomeController;
 
+// =============================================
+//  FRONTEND DESACOPLADO: RUTAS DE ARCHIVOS HTML
+// =============================================
+// Este archivo solo sirve archivos HTML estáticos para cada vista principal del frontend.
+// Todas las vistas y la lógica de negocio se manejan con JavaScript y peticiones a la API externa.
+// No se usan vistas Blade ni controladores que dependan de modelos locales.
 
+// Ruta principal: página de inicio
+Route::get('/', function () {
+    // Sirve el archivo index.html desde la carpeta public
+    return response()->file(public_path('index.html'));
+});
 
-// Página de inicio dinámica
-Route::get('/home', [HomeController::class, 'index'])->name('home');
+// Página de inicio
+Route::get('/home', function () {
+    // Sirve la vista estática home.html
+    return response()->file(resource_path('views/static/home.html'));
+});
 
-// Bestsellers
-Route::get('/bestsellers', function () {
-    return view('bestsellers');
-})->name('masvendidos');
-
-// Productos - Rutas públicas
+// Página de productos
 Route::get('/products', function () {
-    return view('products');
-})->name('productos');
+    // Sirve la vista estática products.html
+    return response()->file(resource_path('views/static/products.html'));
+});
 
-// Servicios - Rutas públicas
+// Página de servicios
 Route::get('/services', function () {
-    return view('services');
-})->name('servicios');
+    // Sirve la vista estática services.html
+    return response()->file(resource_path('views/static/services.html'));
+});
 
-// Carrito de compras
-Route::get('/shoppingCart', function () {
-    return view('shoppingcart');
-})->name('shoppingCart');
+// Página del carrito
+Route::get('/cart', function () {
+    // Sirve la vista estática cart.html
+    return response()->file(resource_path('views/static/cart.html'));
+});
 
-// Perfil usuario
-Route::get('/user', function () {
-    return view('profiles.user');
-})->name('user');
+// Página de perfil
+Route::get('/profile', function () {
+    // Sirve la vista estática profile.html
+    return response()->file(resource_path('views/static/profile.html'));
+});
 
-// Perfil emprendedor
-Route::get('/entrepreneur', function () {
-    return view('profiles.entrepreneur');
-})->name('entrepreneur');
+// Página de login
+Route::get('/login', function () {
+    // Sirve la vista estática login.html
+    return response()->file(resource_path('views/static/login.html'));
+});
 
-// USER AUTH
-Route::get('/login/user', [UserAuthController::class, 'showLogin'])->name('login.user');
-Route::get('/register/user', [UserAuthController::class, 'showRegister'])->name('register.user');
-
-// ENTREPRENEUR AUTH
-Route::get('/login/entrepreneur', [EntrepreneurAuthController::class, 'showLogin'])->name('login.entrepreneur');
-Route::get('/register/entrepreneur', [EntrepreneurAuthController::class, 'showRegister'])->name('register.entrepreneur');
-
-// Dashboard para el emprendedor (con modales y JS)
-Route::get('/entrepreneur/services', function () {
-    return view('modals.login-items.entrepreneur.ServicesSection');
-})->name('entrepreneur.services');
-
-// Perfil de emprendedor
-Route::get('/entrepreneur/profile', [EntrepreneurProfileController::class, 'show'])->name('entrepreneur.profile');
-
-// Perfil público del emprendedor
-Route::get('/entrepreneur/{id}/profile', [EntrepreneurProfileController::class, 'publicProfile'])
-    ->name('entrepreneur.public.profile');
-
-//rutas del perfil de usuario
-Route::get('/userProfile', function () {
-    return view('modals.login-items.user.ProfileSection');
-})->name('profile');
-
-Route::get('/userOrders', function () {
-    return view('modals.login-items.user.OrderSection');
-})->name('orders');
-
-Route::get('/userReviews', function () {
-    return view('modals.login-items.user.ReviewsSection');
-})->name('reviews');
-
-Route::get('/userFollowed', function () {
-    return view('modals.login-items.user.FollowedStore');
-})->name('followed');
-
-Route::get('/userHistory', function () {
-    return view('modals.login-items.user.BrowsingHistory');
-})->name('history');
-
-Route::get('/userSettings', function () {
-    return view('modals.login-items.user.SettingsSection');
-})->name('settings');
+// Página de registro
+Route::get('/register', function () {
+    // Sirve la vista estática register.html
+    return response()->file(resource_path('views/static/register.html'));
+});

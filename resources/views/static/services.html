@@ -1,0 +1,30 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Servicios</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="../../css/services.css">
+  <link rel="stylesheet" href="../../css/Navbar.css">
+</head>
+<body>
+  <div id="navbar"></div>
+  <main class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-12">
+      <h1 class="text-4xl font-extrabold text-gray-800 mb-8 flex items-center"><i class="fas fa-concierge-bell text-red-600 mr-2"></i> Servicios</h1>
+      <div id="services-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8"></div>
+    </div>
+  </main>
+  <div id="footer"></div>
+  <script type="module">
+    import '../../js/config.js';
+    import { renderNavbar } from '../../js/components/navbar.js';
+    import { renderFooter } from '../../js/components/footer.js';
+    import '../../js/services.js';
+    renderNavbar('navbar');
+    renderFooter('footer');
+  </script>
+</body>
+</html>

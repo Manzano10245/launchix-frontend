@@ -7,7 +7,7 @@
 const ProductApp = (function() {
     // Configuración privada
     const config = {
-        apiBaseUrl: '/api',
+        apiBaseUrl: (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1'),
         maxImageSize: 2 * 1024 * 1024, // 2MB
         allowedImageTypes: ['image/jpeg', 'image/png', 'image/jpg'],
         maxGalleryImages: 5,
@@ -37,7 +37,6 @@ const ProductApp = (function() {
     function _getCsrfToken() {
         const token = document.querySelector('meta[name="csrf-token"]');
         if (!token) {
-            console.error('❌ [CSRF] Token CSRF no encontrado');
             return '';
         }
         return token.content;
@@ -128,21 +127,35 @@ const ProductApp = (function() {
      * @returns {Promise} Promesa con la respuesta
      */
     async function _apiRequest(endpoint, options = {}) {
-        const defaultOptions = {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'X-CSRF-TOKEN': _getCsrfToken()
-            }
+        const method = (options.method || 'GET').toUpperCase();
+        const headers = {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            ...(options.headers || {})
         };
 
-        const mergedOptions = { ...defaultOptions, ...options };
+        const csrfToken = _getCsrfToken();
+        if (csrfToken) headers['X-CSRF-TOKEN'] = csrfToken;
+        if (window.API_AUTH_STRATEGY === 'token' && window.API_TOKEN) {
+            headers['Authorization'] = `Bearer ${window.API_TOKEN}`;
+        }
+
+        const base = (config.apiBaseUrl || '/api').replace(/\/$/, '');
+        const fullUrl = endpoint.startsWith('http') ? endpoint : `${base}${endpoint}`;
+
+        const mergedOptions = {
+            method,
+            headers,
+            credentials: window.API_WITH_CREDENTIALS ? 'include' : (options.credentials || 'same-origin'),
+            ...options
+        };
 
         try {
-            console.log(`📡 [API] ${mergedOptions.method} ${endpoint}`);
-
-            const response = await fetch(`${config.apiBaseUrl}${endpoint}`, mergedOptions);
+            console.log(`📡 [API] ${mergedOptions.method} ${fullUrl}`);
+            if (window.API_WITH_CREDENTIALS && window.API_AUTH_STRATEGY === 'sanctum' && method !== 'GET') {
+                try { await fetch(`${(window.API_BASE_URL || '').replace(/\/$/, '')}/sanctum/csrf-cookie`, { credentials: 'include' }); } catch {}
+            }
+            const response = await fetch(fullUrl, mergedOptions);
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
@@ -278,39 +291,100 @@ const ProductApp = (function() {
      * @returns {Object} Producto transformado
      */
     function _transformProductData(apiProduct) {
+        const resolved = _normalizeRawProduct(apiProduct);
+        return resolved;
+    }
+
+    /**
+     * Resuelve una imagen cualquiera (absoluta, relativa, storage, nula)
+     */
+    function _resolveImage(raw, { placeholder = 'https://via.placeholder.com/300x300/F77786/FFFFFF?text=Producto' } = {}) {
+        if (!raw) return placeholder;
+        if (/^data:/.test(raw)) return raw; // base64
+        if (/^https?:\/\//i.test(raw)) return raw; // absoluta
+        // Construir base API
+        const base = (window.API_BASE_URL || '').replace(/\/$/, '');
+        // Quitar barras iniciales repetidas
+        let path = raw.replace(/^\/+/, '');
+        // Si ya incluye storage/
+        if (/^storage\//.test(path)) return `${base}/${path}`;
+        // Quitar prefijo public/
+        path = path.replace(/^public\//, '');
+        // Añadir storage por defecto
+        return `${base}/storage/${path}`;
+    }
+
+    /**
+     * Normaliza diferentes nombres de campos provenientes del backend
+     */
+    function _normalizeRawProduct(p) {
+        if (!p || typeof p !== 'object') return null;
+
+        // Nombres alternativos
+        const id = p.id || p.product_id || null;
+        const name = p.name || p.nombre || p.title || 'Producto';
+        const description = p.description || p.descripcion || p.details || '';
+        const price = parseFloat(p.price || p.precio || p.current_price || 0) || 0;
+        const originalPrice = parseFloat(p.original_price || p.precio_original || p.old_price || price) || price;
+        const stock = parseInt(p.stock || p.in_stock || p.existencias || 0) || 0;
+        const rating = parseFloat(p.rating || p.calificacion || p.stars || 4) || 4;
+        const reviews = parseInt(p.reviews_count || p.reviews || p.opiniones || 0) || 0;
+        const brand = p.brand || p.marca || '';
+        const sku = p.sku || p.codigo || '';
+        const createdAt = p.created_at || p.fecha_creacion || new Date().toISOString();
+
+        // Imágenes posibles
+        const mainImage = p.main_image || p.image || p.imagen || '';
+        const galleryRaw = p.gallery_images || p.gallery || p.galeria || [];
+        const gallery = Array.isArray(galleryRaw) ? galleryRaw.map(img => _resolveImage(img)) : [];
+
+        // Categoría
+        let categoryObj = { name: 'General', slug: 'general' };
+        if (p.category && typeof p.category === 'object') {
+            categoryObj = {
+                name: p.category.name || p.category.nombre || 'General',
+                slug: p.category.slug || p.category.code || 'general'
+            };
+        } else if (typeof p.category === 'string') {
+            categoryObj = { name: p.category, slug: (p.category || 'general').toLowerCase() };
+        }
+
+        // Descuento
+        const discount = _calculateDiscount(price, originalPrice);
+
+        // Emprendedor
+        const ent = p.entrepreneur || p.emprendedor || p.seller || null;
+        let entrepreneur = null;
+        if (ent && typeof ent === 'object') {
+            const entName = ent.name || `${ent.first_name || ''} ${ent.last_name || ''}`.trim() || ent.business_name || '';
+            const entBusiness = ent.business_name || entName;
+            entrepreneur = {
+                id: ent.id,
+                name: entName,
+                business_name: entBusiness,
+                avatar: _resolveImage(ent.avatar || ent.logo || '')
+            };
+        }
+
         return {
-            id: apiProduct.id,
-            name: apiProduct.name,
-            category: {
-                name: apiProduct.category?.name || 'General',
-                slug: apiProduct.category?.slug || 'general'
-            },
-            price: parseFloat(apiProduct.price),
-            originalPrice: apiProduct.original_price ?
-                parseFloat(apiProduct.original_price) :
-                parseFloat(apiProduct.price),
-            rating: parseFloat(apiProduct.rating) || 4.0,
-            reviews: parseInt(apiProduct.reviews_count) || 0,
-            image: apiProduct.main_image ||
-                'https://via.placeholder.com/300x300/F77786/FFFFFF?text=Producto',
-            gallery: apiProduct.gallery_images || [],
-            description: apiProduct.description || '',
-            inStock: apiProduct.stock > 0,
-            stock: parseInt(apiProduct.stock) || 0,
-            isNew: _isProductNew(apiProduct.created_at),
-            discount: _calculateDiscount(apiProduct.price, apiProduct.original_price),
-            brand: apiProduct.brand || '',
-            sku: apiProduct.sku || '',
-            created_at: apiProduct.created_at,
-            entrepreneur: apiProduct.entrepreneur ? {
-                id: apiProduct.entrepreneur.id,
-                name: apiProduct.entrepreneur.name ||
-                    `${apiProduct.entrepreneur.first_name} ${apiProduct.entrepreneur.last_name}`,
-                business_name: apiProduct.entrepreneur.business_name ||
-                    `${apiProduct.entrepreneur.first_name} ${apiProduct.entrepreneur.last_name}`,
-                avatar: apiProduct.entrepreneur.avatar ||
-                    `https://ui-avatars.com/api/?name=${encodeURIComponent(apiProduct.entrepreneur.first_name + ' ' + apiProduct.entrepreneur.last_name)}&background=F77786&color=fff`
-            } : null
+            id,
+            name,
+            category: categoryObj,
+            price,
+            originalPrice,
+            rating,
+            reviews,
+            image: _resolveImage(mainImage),
+            gallery,
+            description,
+            inStock: stock > 0,
+            stock,
+            isNew: _isProductNew(createdAt),
+            discount,
+            brand,
+            sku,
+            created_at: createdAt,
+            entrepreneur
         };
     }
 
@@ -427,13 +501,29 @@ const ProductApp = (function() {
 
                 // Obtener productos de la API
                 const response = await _apiRequest('/products');
+                console.log('[PRODUCTS][RAW]', response);
 
-                if (!response.success) {
-                    throw new Error(response.message || 'Error al cargar productos');
+                // Posibles formatos: { success:true, data:[...] } | { data:{ data:[...] }} (paginación) | [arrayPlano]
+                let list = [];
+                if (Array.isArray(response)) {
+                    list = response;
+                } else if (response && Array.isArray(response.data)) {
+                    // Caso éxito simple: { data: [...] } o { success:true,data:[...] }
+                    list = response.data;
+                } else if (response && response.data && Array.isArray(response.data.data)) {
+                    // Paginación Laravel: { data: { data: [...] , current_page: ... } }
+                    list = response.data.data;
+                } else if (response && response.success && response.results && Array.isArray(response.results)) {
+                    list = response.results;
+                }
+
+                if (!list.length) {
+                    console.warn('[PRODUCTS] Lista vacía o formato no reconocido. Usando productos estáticos.');
+                    throw new Error('Formato de respuesta no reconocido');
                 }
 
                 // Transformar y combinar productos
-                const apiProducts = response.data.map(product => _transformProductData(product));
+                const apiProducts = list.map(product => _transformProductData(product)).filter(Boolean);
                 products = [...staticProducts, ...apiProducts];
                 filteredProducts = [...products];
 

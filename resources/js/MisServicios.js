@@ -3,6 +3,8 @@
  * Versión mejorada con manejo de errores robusto y logging detallado
  */
 
+import './config.js';
+
 document.addEventListener('DOMContentLoaded', function() {
     console.log('🛠️ [SERVICIOS] Inicializando módulo de Mis Servicios');
 
@@ -14,6 +16,21 @@ document.addEventListener('DOMContentLoaded', function() {
     const loading = document.getElementById('servicios-loading');
     const countEl = document.getElementById('servicios-count');
     let currentServices = [];
+        const __missingServiceDetailIds = new Set();
+    let __isLoadingMyServices = false;
+    let __lastLoadTs = 0;
+
+    function dedupById(list) {
+        const seen = new Set();
+        return (list || []).filter(s => {
+            const id = s && s.id;
+            if (id == null) return true;
+            const key = String(id);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
 
     // Verificar elementos críticos
     console.log('🔍 [DOM] Elementos encontrados:', {
@@ -36,7 +53,6 @@ document.addEventListener('DOMContentLoaded', function() {
             console.warn(`⚠️ [MODAL] Modal con ID ${id} no encontrado`);
             return;
         }
-
         console.log(`🚪 [MODAL] Cerrando modal ${id}`);
         modal.style.opacity = '0';
         modal.style.transform = 'scale(0.95)';
@@ -125,12 +141,93 @@ document.addEventListener('DOMContentLoaded', function() {
     // CARGA DE SERVICIOS (API)
     // ============================================
 
+    // Helpers de API y autenticación
+    function authHeaders(base = {}) {
+        const headers = { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest', ...(base || {}) };
+        try {
+            const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+        } catch {}
+        return headers;
+    }
+
+    async function getEntrepreneurId() {
+        try {
+            if (window.ENTREPRENEUR_ID) return window.ENTREPRENEUR_ID;
+            const cached = localStorage.getItem('ENTREPRENEUR_ID');
+            if (cached) { window.ENTREPRENEUR_ID = cached; return cached; }
+
+            const mePath = window.API_EP_ME || `${(window.API_PREFIX || '/api/v1')}/entrepreneur/me`;
+            const base = (window.API_BASE_URL || '').replace(/\/$/, '');
+            const url = `${base}${mePath.startsWith('/') ? mePath : `/${mePath}`}`;
+            const res = await fetch(url, { method: 'GET', headers: authHeaders(), credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+            if (!res.ok) return null;
+            const data = await res.json().catch(() => ({}));
+            const payload = data?.data || data?.user || data?.entrepreneur || data;
+            const id = payload?.id || payload?.entrepreneur_id || null;
+            if (id != null) {
+                window.ENTREPRENEUR_ID = String(id);
+                try { localStorage.setItem('ENTREPRENEUR_ID', String(id)); } catch {}
+                return String(id);
+            }
+            return null;
+        } catch { return null; }
+    }
+
+    function getOwnerIdFromService(s) {
+        if (!s || typeof s !== 'object') return null;
+        // snake_case
+        if (s.entrepreneur_id != null) return s.entrepreneur_id;
+        if (s.emprendedor_id != null) return s.emprendedor_id;
+        if (s.owner_id != null) return s.owner_id;
+        if (s.user_id != null) return s.user_id;
+        if (s.usuario_id != null) return s.usuario_id;
+        if (s.created_by_id != null) return s.created_by_id;
+        if (s.creator_id != null) return s.creator_id;
+        if (s.author_id != null) return s.author_id;
+
+        // camelCase
+        if (s.entrepreneurId != null) return s.entrepreneurId;
+        if (s.emprendedorId != null) return s.emprendedorId;
+        if (s.ownerId != null) return s.ownerId;
+        if (s.userId != null) return s.userId;
+        if (s.usuarioId != null) return s.usuarioId;
+        if (s.createdById != null) return s.createdById;
+        if (s.creatorId != null) return s.creatorId;
+        if (s.authorId != null) return s.authorId;
+
+        // relaciones anidadas
+        if (s.entrepreneur && s.entrepreneur.id != null) return s.entrepreneur.id;
+        if (s.emprendedor && s.emprendedor.id != null) return s.emprendedor.id;
+        if (s.owner && s.owner.id != null) return s.owner.id;
+        if (s.user && s.user.id != null) return s.user.id;
+        if (s.usuario && s.usuario.id != null) return s.usuario.id;
+        if (s.created_by && s.created_by.id != null) return s.created_by.id;
+        if (s.creator && s.creator.id != null) return s.creator.id;
+        if (s.author && s.author.id != null) return s.author.id;
+
+        return null;
+    }
+
     /**
      * Carga los servicios del emprendedor desde la API
      */
     window.loadMisServicios = async function() {
+        // Evitar cargas concurrentes y rebotes seguidos
+        if (__isLoadingMyServices) {
+            console.debug('⏳ [SERVICIOS] Carga en curso, omitiendo llamada concurrente');
+            return;
+        }
+        const now = Date.now();
+        if (now - __lastLoadTs < 600) {
+            console.debug('🪫 [SERVICIOS] Debounce: evitando recarga inmediata');
+            return;
+        }
+        __isLoadingMyServices = true;
+        __lastLoadTs = now;
         if (!grid) {
             console.error('❌ [SERVICIOS] Grid de servicios no encontrado');
+            __isLoadingMyServices = false;
             return;
         }
 
@@ -140,32 +237,145 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             console.log('🔄 [SERVICIOS] Cargando servicios desde API');
 
-            const response = await fetch('/api/entrepreneur/services', {
-                method: 'GET',
-                headers: {
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'X-CSRF-TOKEN': getCsrfToken()
+            const base = (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1');
+            const primary = `${base}${window.API_REL_EP_SERVICES || '/servicios'}`; // confirmado en backend
+            const fallback = `${base}${window.API_REL_EP_SERVICES_FALLBACK || '/servicios'}`;
+            const headers = {
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            };
+            try {
+                const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+            } catch {}
+            let preferFallback = window.__USE_SERVICES_FALLBACK === true;
+            let response;
+            if (!preferFallback) {
+                response = await fetch(primary + (primary.includes('?') ? '&' : '?') + `_=${Date.now()}`, { method: 'GET', headers, credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+            }
+            if (preferFallback || !response.ok) {
+                // mark fallback usage if primary failed
+                if (response && response.status === 404) window.__USE_SERVICES_FALLBACK = true;
+                response = await fetch(fallback + (fallback.includes('?') ? '&' : '?') + `_=${Date.now()}`, { method: 'GET', headers, credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.message || `Error ${response.status}: ${response.statusText}`);
                 }
-            });
+            }
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || `Error ${response.status}: ${response.statusText}`);
+                const msg = errorData.message || `Error ${response.status}: ${response.statusText}`;
+                throw new Error(msg);
             }
 
             const data = await response.json();
             console.log('📦 [SERVICIOS] Datos recibidos:', data);
 
-            if (!data.success) {
-                throw new Error(data.message || 'Error al cargar servicios');
-            }
+            let items = [];
+            if (Array.isArray(data)) items = data;
+            else if (Array.isArray(data.data)) items = data.data;
+            else if (Array.isArray(data.servicios)) items = data.servicios; // nombre local
+            else if (Array.isArray(data.services)) items = data.services;
+            else if (data.service) items = [data.service];
+            // Filtrar por emprendedor autenticado: 'Mis Servicios' debe mostrar solo los míos
+            const eid = await getEntrepreneurId();
+            if (eid != null) {
+                items = (items || []).filter(s => {
+                    const owner = getOwnerIdFromService(s);
+                    return owner != null && String(owner) === String(eid);
+                });
+                console.log(`🧩 [SERVICIOS] Filtrados por emprendedor #${eid}: ${items.length}`);
+                // Si el backend no marca propietario y el filtro queda vacío, intentar endpoint dedicado del emprendedor
+                if ((!items || items.length === 0)) {
+                    try {
+                        const base = (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1');
+                        const epMine = `${base}/entrepreneur/services`;
+                        // Evitar intentar si ya sabemos que no existe
+                        if (!(window.__NO_EP_ENTREPRENEUR_SERVICES || localStorage.getItem('__NO_EP_ENTREPRENEUR_SERVICES') === '1')) {
+                            const resMine = await fetch(epMine, { method: 'GET', headers: authHeaders(), credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                            if (resMine.status === 404) {
+                                window.__NO_EP_ENTREPRENEUR_SERVICES = true;
+                                try { localStorage.setItem('__NO_EP_ENTREPRENEUR_SERVICES', '1'); } catch {}
+                            }
+                            if (resMine.ok) {
+                                const d2 = await resMine.json().catch(() => ({}));
+                                let mine = [];
+                                if (Array.isArray(d2)) mine = d2;
+                                else if (Array.isArray(d2.data)) mine = d2.data;
+                                else if (Array.isArray(d2.services)) mine = d2.services;
+                                else if (Array.isArray(d2.servicios)) mine = d2.servicios;
+                                else if (d2.service) mine = [d2.service];
+                                if (mine && mine.length > 0) {
+                                    items = mine;
+                                    console.log(`🛠️ [SERVICIOS] Usado endpoint dedicado /entrepreneur/services: ${items.length}`);
+                                }
+                            }
+                        }
+                    } catch {}
+                }
+                // Si sigue vacío, usar cache local de IDs creados por este emprendedor
+                if (!items || items.length === 0) {
+                    try {
+                        const key = `MY_SERVICE_IDS:${eid}`;
+                        const idsRaw = JSON.parse(localStorage.getItem(key) || '[]');
+                        const ids = Array.isArray(idsRaw) ? idsRaw : [];
+                        if (ids.length > 0) {
+                            // obtener todos y filtrar por ids (comparación como string para evitar desajustes tipo/valor)
+                            const all = currentServices && currentServices.length ? currentServices : items;
+                            let pool = all;
+                            if (!pool || pool.length === 0) pool = (Array.isArray(data)) ? data : (data?.data || data?.services || data?.servicios || []);
+                            const idSet = new Set(ids.map(x => String(x)));
+                            items = (pool || []).filter(s => idSet.has(String(s.id)));
 
-            if (!Array.isArray(data.data)) {
-                throw new Error('Formato de datos inesperado');
-            }
+                            // Si faltan algunos, intentar traerlos individualmente por ID del endpoint genérico
+                            const missing = ids.filter(x => !items.some(s => String(s.id) === String(x)));
+                            if (missing.length > 0) {
+                                const base = (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1');
+                                const rel = (window.API_REL_EP_SERVICES_FALLBACK || '/services');
+                                const variants = [rel, rel === '/services' ? '/servicios' : '/services'];
+                                for (const mid of missing) {
+                                    if (__missingServiceDetailIds.has(String(mid))) {
+                                        continue; // ya sabemos que no existe
+                                    }
+                                    let fetched = false;
+                                    for (const v of variants) {
+                                        try {
+                                            const res = await fetch(`${base}${v}/${mid}?_=${Date.now()}`, { method: 'GET', headers: authHeaders(), credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                                            if (res.ok) {
+                                                const d3 = await res.json().catch(() => ({}));
+                                                let obj = d3?.data || d3?.service || d3;
+                                                if (obj && typeof obj === 'object') {
+                                                    items.push(obj);
+                                                    fetched = true;
+                                                    break;
+                                                }
+                                            }
+                                        } catch {}
+                                    }
+                                    if (!fetched) {
+                                        __missingServiceDetailIds.add(String(mid));
+                                        // Remover del cache local para no insistir
+                                        try {
+                                            const key = `MY_SERVICE_IDS:${eid}`;
+                                            const idsRaw = JSON.parse(localStorage.getItem(key) || '[]');
+                                            const next = (Array.isArray(idsRaw) ? idsRaw : []).filter(x => String(x) !== String(mid));
+                                            localStorage.setItem(key, JSON.stringify(next));
+                                        } catch {}
+                                    }
+                                }
+                            }
 
-            currentServices = data.data;
+                            console.log(`💾 [SERVICIOS] Usada cache local de servicios: ${items.length}/${ids.length}`);
+                        }
+                    } catch {}
+                }
+            } else {
+                console.warn('⚠️ [SERVICIOS] No se pudo determinar entrepreneur_id; mostrando lista sin filtrar para evitar falsos negativos');
+            }
+            // Deduplicar por id antes de renderizar
+            items = dedupById(items);
+            currentServices = items;
 
             if (countEl) countEl.textContent = currentServices.length;
 
@@ -194,7 +404,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 <div class="col-span-full text-center text-red-400 py-12">
                     <i class="fas fa-exclamation-triangle text-4xl mb-4"></i>
                     <h3 class="text-xl font-semibold mb-2">Error al cargar servicios</h3>
-                    <p class="text-gray-600">${error.message}</p>
+                    <p class="text-gray-600">${error.message}. Verifica que exista la ruta ${window.API_PREFIX || '/api/v1'}${window.API_REL_EP_SERVICES_FALLBACK || '/servicios'}</p>
                     <button onclick="loadMisServicios()"
                             class="mt-4 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors">
                         <i class="fas fa-sync-alt mr-2"></i> Reintentar
@@ -203,6 +413,7 @@ document.addEventListener('DOMContentLoaded', function() {
             `;
         } finally {
             if (loading) loading.classList.add('hidden');
+            __isLoadingMyServices = false;
         }
     };
 
@@ -216,11 +427,17 @@ document.addEventListener('DOMContentLoaded', function() {
      * @returns {string} HTML de la tarjeta
      */
     function renderServicioCard(servicio) {
-        const imgSrc = servicio.imagen_principal ?
-            (servicio.imagen_principal.startsWith('http') ?
-                servicio.imagen_principal :
-                `/storage/${servicio.imagen_principal}`) :
-            'https://via.placeholder.com/300x300/F77786/FFFFFF?text=Servicio';
+        const apiHost = (window.API_BASE_URL || '').replace(/\/$/, '');
+        let imgSrc = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="100%" height="100%" fill="#fde8e8"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="18" fill="#9b1c1c">Sin imagen</text></svg>');
+        if (servicio.imagen_principal) {
+            if (typeof servicio.imagen_principal === 'string' && servicio.imagen_principal.startsWith('http')) {
+                imgSrc = servicio.imagen_principal;
+            } else {
+                const rel = String(servicio.imagen_principal).replace(/^\/+/, '');
+                const path = rel.startsWith('storage/') ? rel : `storage/${rel.replace(/^storage\//,'')}`;
+                imgSrc = `${apiHost}/${path}`;
+            }
+        }
 
         const precio = servicio.precio_base ?
             `$${Number(servicio.precio_base).toLocaleString(undefined, {
@@ -234,10 +451,10 @@ document.addEventListener('DOMContentLoaded', function() {
         return `
             <div class="product-card bg-white rounded-lg shadow-lg overflow-hidden fade-in hover:shadow-xl transition-shadow duration-300">
                 <div class="relative">
-                    <img src="${imgSrc}"
+                <img src="${imgSrc}"
                          alt="${servicio.nombre_servicio || 'Servicio'}"
                          class="w-full h-64 object-cover"
-                         onerror="this.src='https://via.placeholder.com/300x300/F77786/FFFFFF?text=Servicio'">
+                    onerror="this.onerror=null;this.src='data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'300\' height=\'300\'><rect width=\'100%\' height=\'100%\' fill=\'#fde8e8\'/><text x=\'50%\' y=\'50%\' dominant-baseline=\'middle\' text-anchor=\'middle\' font-size=\'18\' fill=\'#9b1c1c\'>Sin imagen</text></svg>')}'">
 
                     <div class="absolute top-2 right-2 bg-gradient-to-r from-red-500 to-red-600 text-white px-3 py-1 rounded-full text-xs font-semibold shadow-lg">
                         ${categoria}
@@ -357,7 +574,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Editar servicio
         grid.querySelectorAll('.editar-servicio').forEach(btn => {
-            btn.addEventListener('click', async function() {
+            btn.addEventListener('click', async function(e) {
+                // Evitar que el handler global de ServicePublishing también capture este click
+                if (e) { e.preventDefault(); e.stopPropagation(); }
                 const serviceId = this.dataset.id;
                 try {
                     console.log(`📝 [SERVICIO] Preparando edición del servicio ${serviceId}`);
@@ -402,26 +621,30 @@ document.addEventListener('DOMContentLoaded', function() {
      */
     async function loadServiceDetails(serviceId) {
         try {
-            const response = await fetch(`/api/services/${serviceId}`, {
-                method: 'GET',
-                headers: {
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || `Error ${response.status}: ${response.statusText}`);
+            const base = (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1');
+            const rel = (window.API_REL_EP_SERVICES || '/servicios');
+            const variants = [rel, rel === '/servicios' ? '/services' : '/servicios'];
+            let raw = null, ok = false, lastErr = '';
+            for (const v of variants) {
+                try {
+                    const url = `${base}${v}/${serviceId}?_=${Date.now()}`;
+                    const res = await fetch(url, { method: 'GET', headers: authHeaders(), credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                    if (res.ok) { raw = await res.json().catch(() => ({})); ok = true; break; }
+                    else { lastErr = `Error ${res.status}`; }
+                } catch (e) { lastErr = e?.message || String(e); }
+            }
+            if (!ok) {
+                __missingServiceDetailIds.add(String(serviceId));
+                throw new Error(lastErr || 'Error al obtener el servicio');
             }
 
-            const data = await response.json();
-
-            if (!data.success) {
-                throw new Error(data.message || 'Error al cargar detalles del servicio');
+            // Normalizar payload
+            const payload = raw?.data?.service || raw?.data || raw?.service || raw;
+            if (!payload) {
+                throw new Error('Respuesta inválida del servidor');
             }
 
-            fillVerModal(data.service);
+            fillVerModal(payload);
             openModal('modal-ver');
 
         } catch (error) {
@@ -436,27 +659,48 @@ document.addEventListener('DOMContentLoaded', function() {
      */
     async function loadServiceForEditing(serviceId) {
         try {
-            const response = await fetch(`/api/services/${serviceId}`, {
-                method: 'GET',
-                headers: {
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || `Error ${response.status}: ${response.statusText}`);
+            const base = (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1');
+            const rel = (window.API_REL_EP_SERVICES || '/servicios');
+            const variants = [rel, rel === '/servicios' ? '/services' : '/servicios'];
+            let raw = null, ok = false, lastErr = '';
+            for (const v of variants) {
+                try {
+                    const url = `${base}${v}/${serviceId}?_=${Date.now()}`;
+                    const res = await fetch(url, { method: 'GET', headers: authHeaders(), credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                    if (res.ok) { raw = await res.json().catch(() => ({})); ok = true; break; }
+                    else if (res.status === 403) {
+                        // Fallback: listar mis servicios y tomar por ID si es mío
+                        try {
+                            const listUrl = `${base}/servicios?_=${Date.now()}`;
+                            const listRes = await fetch(listUrl, { method: 'GET', headers: authHeaders(), credentials: window.API_WITH_CREDENTIALS ? 'include' : 'same-origin' });
+                            if (listRes.ok) {
+                                const lj = await listRes.json().catch(() => ({}));
+                                const items = Array.isArray(lj) ? lj : (lj?.data || lj?.services || lj?.servicios || []);
+                                const found = Array.isArray(items) ? items.find(s => String(s.id) === String(serviceId)) : null;
+                                if (found) { raw = { data: found }; ok = true; break; }
+                            }
+                        } catch {}
+                        lastErr = 'Error 403';
+                    } else { lastErr = `Error ${res.status}`; }
+                } catch (e) { lastErr = e?.message || String(e); }
+            }
+            if (!ok) {
+                __missingServiceDetailIds.add(String(serviceId));
+                throw new Error(lastErr || 'Error al obtener el servicio');
             }
 
-            const data = await response.json();
-
-            if (!data.success) {
-                throw new Error(data.message || 'Error al cargar servicio para edición');
+            // Normalizar payload
+            const payload = raw?.data?.service || raw?.data || raw?.service || raw;
+            if (!payload) {
+                throw new Error('Respuesta inválida del servidor');
             }
 
-            fillEditModal(data.service);
-            openModal('modal-editar');
+            if (window.ServicesManager && typeof window.ServicesManager.showEditModal === 'function') {
+                window.ServicesManager.showEditModal(payload);
+            } else {
+                fillEditModal(payload);
+                openModal('modal-editar');
+            }
 
         } catch (error) {
             console.error('❌ [SERVICIO] Error al cargar servicio para edición:', error);
@@ -470,13 +714,21 @@ document.addEventListener('DOMContentLoaded', function() {
      */
     async function deleteService(serviceId) {
         try {
-            const response = await fetch(`/api/services/${serviceId}`, {
+            const base = (window.API_BASE_URL || '').replace(/\/$/, '') + (window.API_PREFIX || '/api/v1');
+            const url = `${base}${(window.API_REL_EP_SERVICES || '/servicios')}/${serviceId}`;
+            const headers = {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': getCsrfToken(),
+                'X-Requested-With': 'XMLHttpRequest'
+            };
+            try {
+                const token = window.API_TOKEN || localStorage.getItem('API_TOKEN');
+                if (token) headers['Authorization'] = `Bearer ${token}`;
+            } catch {}
+
+            const response = await fetch(url, {
                 method: 'DELETE',
-                headers: {
-                    'Accept': 'application/json',
-                    'X-CSRF-TOKEN': getCsrfToken(),
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
+                headers
             });
 
             if (!response.ok) {
@@ -491,7 +743,33 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
             showToast('Servicio eliminado correctamente', 'success');
-            loadMisServicios();
+            // Quitar del DOM inmediatamente
+            try {
+                const card = document.querySelector(`.product-card .eliminar-servicio[data-id="${serviceId}"]`)?.closest('.product-card');
+                if (card && card.parentElement) card.parentElement.removeChild(card);
+            } catch {}
+
+            // Eliminar de la caché local de IDs para evitar futuras recuperaciones por ID
+            try {
+                const eid = (window.ENTREPRENEUR_ID || localStorage.getItem('ENTREPRENEUR_ID'));
+                if (eid) {
+                    const key = `MY_SERVICE_IDS:${eid}`;
+                    const idsRaw = JSON.parse(localStorage.getItem(key) || '[]');
+                    const ids = Array.isArray(idsRaw) ? idsRaw : [];
+                    const next = ids.filter(x => String(x) !== String(serviceId));
+                    localStorage.setItem(key, JSON.stringify(next));
+                }
+            } catch {}
+
+            // Refrescar lista con debounce natural del loader; no insistir en endpoints 404
+            setTimeout(() => {
+                if (window.ServicesManager && typeof window.ServicesManager.loadServicios === 'function') {
+                    window.ServicesManager.loadServicios();
+                }
+                if (typeof loadMisServicios === 'function') {
+                    loadMisServicios();
+                }
+            }, 300);
 
             // Recargar la vista pública si existe
             if (window.ServicesManager && typeof window.ServicesManager.loadServicios === 'function') {
@@ -523,14 +801,19 @@ document.addEventListener('DOMContentLoaded', function() {
         const nombreEl = modal.querySelector('#ver-nombre');
         if (nombreEl) nombreEl.textContent = service.nombre_servicio || 'Sin nombre';
 
-        // Imagen principal
+        // Imagen principal (resolver contra host de API para evitar 404 en vite)
+        const apiHost = (window.API_BASE_URL || '').replace(/\/$/, '');
+        const resolveImg = (p) => {
+            if (!p) return '';
+            if (typeof p === 'string' && p.startsWith('http')) return p;
+            const rel = String(p).replace(/^\/+/, '');
+            const path = rel.startsWith('storage/') ? rel : `storage/${rel.replace(/^storage\//,'')}`;
+            return `${apiHost}/${path}`;
+        };
         const imgElement = modal.querySelector('#ver-img');
         if (imgElement) {
-            imgElement.src = service.imagen_principal ?
-                (service.imagen_principal.startsWith('http') ?
-                    service.imagen_principal :
-                    `/storage/${service.imagen_principal}`) :
-                'https://via.placeholder.com/400x300/F77786/FFFFFF?text=Servicio';
+            const src = service.imagen_principal ? resolveImg(service.imagen_principal) : '';
+            imgElement.src = src || 'https://via.placeholder.com/400x300/F77786/FFFFFF?text=Servicio';
             imgElement.alt = service.nombre_servicio || 'Servicio';
         }
 
@@ -575,7 +858,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     imgContainer.className = 'relative cursor-pointer group';
 
                     const imgEl = document.createElement('img');
-                    imgEl.src = img.startsWith('http') ? img : `/storage/${img}`;
+                    imgEl.src = resolveImg(img);
                     imgEl.className = 'w-full h-20 object-cover rounded-lg shadow group-hover:opacity-75 transition-opacity';
                     imgEl.alt = `Galería ${index + 1}`;
 
@@ -1199,14 +1482,23 @@ document.addEventListener('DOMContentLoaded', function() {
     // INICIALIZACIÓN
     // ============================================
 
-    // Configurar eventos de cierre de modales
-    setupModalCloseOnOutsideClick();
+    // Detectar si la UI de servicios está presente en esta vista
+    const hasServicesUI = !!(grid || document.getElementById('servicio-form') || document.getElementById('services-grid') || document.querySelector('#servicios .grid'));
 
-    // Configurar el formulario de edición
-    setupEditForm();
+    if (hasServicesUI) {
+        // Configurar eventos de cierre de modales
+        setupModalCloseOnOutsideClick();
 
-    // Cargar servicios al inicio
-    loadMisServicios();
+        // Configurar el formulario de edición solo si existe en el DOM
+        if (document.getElementById('form-editar-servicio')) {
+            setupEditForm();
+        }
+
+        // Cargar servicios al inicio
+        loadMisServicios();
+    } else {
+        console.debug('ℹ️ [SERVICIOS] Módulo omitido: no hay contenedores de servicios en esta página.');
+    }
 
     // Exponer funciones globales
     window.loadMisServicios = loadMisServicios;
@@ -1215,5 +1507,5 @@ document.addEventListener('DOMContentLoaded', function() {
     window.showConfirmDialog = showConfirmDialog;
     window.showToast = showToast;
 
-    console.log('✅ [SERVICIOS] Módulo de Mis Servicios inicializado correctamente');
+    console.log('✅ [SERVICIOS] Módulo de Mis Servicios listo');
 });

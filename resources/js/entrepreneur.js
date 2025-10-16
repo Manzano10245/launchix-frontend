@@ -372,8 +372,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // Handler para el submit del formulario de servicios
     const servicioForm = document.getElementById('servicio-form');
     if (servicioForm) {
-        servicioForm.addEventListener('submit', async function(e) {
+        if (servicioForm.dataset.entrepreneurHandlerBound === 'true') {
+            console.debug('ℹ️ [SERVICES] Handler de submit ya está enlazado (entrepreneur.js)');
+        } else {
+            servicioForm.dataset.entrepreneurHandlerBound = 'true';
+            servicioForm.addEventListener('submit', async function(e) {
             e.preventDefault();
+                if (servicioForm.dataset.submitting === 'true') {
+                    console.debug('⏳ [SERVICES] Submit en curso, ignorando duplicado');
+                    return;
+                }
+                servicioForm.dataset.submitting = 'true';
             const formData = new FormData(servicioForm);
 
             // Validar antes de enviar
@@ -420,7 +429,9 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 showErrors(result.errors || ['Error al publicar el servicio']);
             }
+            servicioForm.dataset.submitting = 'false';
         });
+        }
     }
 
     // Configurar eventos de teclado para navegación
